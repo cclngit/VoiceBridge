@@ -66,6 +66,7 @@ pub struct SystemStatus {
     pub download_message: String,
     pub download_speed_mb_s: f32,
     pub active_model_id: String,
+    pub hardware_backend: String,
 }
 
 #[derive(Clone)]
@@ -154,6 +155,7 @@ impl AppState {
             download_message: dl.status_message.clone(),
             download_speed_mb_s: dl.speed_mb_s,
             active_model_id: cfg.stt.model_id.clone(),
+            hardware_backend: crate::stt::active_whisper_backend_label().to_string(),
         }
     }
 }

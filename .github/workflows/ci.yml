@@ -1,0 +1,326 @@
+name: Build & Package (.dmg / .deb / .exe — x86_64 & ARM64)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Build portable CPU kernels (SSE4.2/AVX2 on x86_64, ARMv8 NEON on ARM64) rather than
+  # locking binaries to the CI runner host CPU via -march=native.
+  GGML_NATIVE: "OFF"
+
+jobs:
+  build:
+    name: Package (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── macOS (.dmg Disk Images: ARM64 & Universal2) ────────────
+          - os: macos-15
+            label: macOS ARM64 (.dmg)
+            artifact: VoiceBridge-macos-arm64
+            target: aarch64-apple-darwin
+            universal_macos: false
+            bin: VoiceBridge
+            pkg_glob: dist/VoiceBridge-macos-arm64.dmg
+
+          - os: macos-15
+            label: macOS Universal (.dmg — ARM64 + Intel x86_64)
+            artifact: VoiceBridge-macos-universal
+            target: universal-apple-darwin
+            universal_macos: true
+            bin: VoiceBridge
+            pkg_glob: dist/VoiceBridge-macos-universal.dmg
+
+          # ── Linux (.deb Debian/Ubuntu Packages via dpkg-deb) ────────
+          - os: ubuntu-24.04
+            label: Linux x86_64 (.deb amd64)
+            artifact: VoiceBridge-linux-amd64
+            target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            universal_macos: false
+            bin: VoiceBridge
+            pkg_glob: dist/VoiceBridge-linux-amd64.deb
+
+          - os: ubuntu-24.04-arm
+            label: Linux ARM64 (.deb arm64)
+            artifact: VoiceBridge-linux-arm64
+            target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            universal_macos: false
+            bin: VoiceBridge
+            pkg_glob: dist/VoiceBridge-linux-arm64.deb
+
+          # ── Windows (.exe Inno Setup Installer & Standalone .exe) ───
+          - os: windows-latest
+            label: Windows x86_64 (.exe Setup & Portable)
+            artifact: VoiceBridge-windows-x86_64
+            target: x86_64-pc-windows-msvc
+            inno_arch: x64compatible
+            universal_macos: false
+            bin: VoiceBridge.exe
+            pkg_glob: dist/VoiceBridge-windows-x86_64*.exe
+
+          - os: windows-11-arm
+            label: Windows ARM64 (.exe Setup & Portable)
+            artifact: VoiceBridge-windows-arm64
+            target: aarch64-pc-windows-msvc
+            inno_arch: arm64
+            universal_macos: false
+            bin: VoiceBridge.exe
+            pkg_glob: dist/VoiceBridge-windows-arm64*.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (x86_64 & ARM64)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            build-essential \
+            cmake \
+            pkg-config \
+            clang \
+            libclang-dev \
+            libssl-dev \
+            libasound2-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-shm0-dev \
+            libxcb-randr0-dev \
+            libxcb-xkb-dev \
+            libxcb-xinput-dev \
+            libxcb-icccm4-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libdbus-1-dev \
+            libvulkan-dev
+
+      - name: Setup NASM on Windows x86_64 (for aws-lc-sys)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Setup MSVC ARM64 Developer Environment on Windows ARM64
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Configure Windows LLVM / libclang & Windows ARM64 Clang-CL + Ninja
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vsPath = ""
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vsPath = & $vswhere -latest -property installationPath
+          }
+
+          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") {
+            $llvmCandidates = @(
+              "$vsPath\VC\Tools\Llvm\ARM64\bin",
+              "C:\Program Files\LLVM\bin",
+              "$vsPath\VC\Tools\Llvm\x64\bin"
+            )
+          } else {
+            $llvmCandidates = @(
+              "C:\Program Files\LLVM\bin",
+              "$vsPath\VC\Tools\Llvm\x64\bin",
+              "$vsPath\VC\Tools\Llvm\ARM64\bin"
+            )
+          }
+
+          foreach ($dir in $llvmCandidates) {
+            if ($dir -and (Test-Path (Join-Path $dir "libclang.dll"))) {
+              echo "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+              echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Append
+              Write-Host "Configured LIBCLANG_PATH=$dir"
+              break
+            }
+          }
+
+          # whisper.cpp / ggml and aws-lc-sys require Clang (clang-cl) on Windows ARM64
+          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") {
+            if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+              $vsNinja = "$vsPath\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+              if (Test-Path (Join-Path $vsNinja "ninja.exe")) {
+                echo "$vsNinja" | Out-File -FilePath $env:GITHUB_PATH -Append
+              }
+            }
+            @(
+              "CMAKE_GENERATOR=Ninja",
+              "CMAKE_C_COMPILER=clang-cl",
+              "CMAKE_CXX_COMPILER=clang-cl",
+              "CC=clang-cl",
+              "CXX=clang-cl"
+            ) | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: Install Rust stable toolchain (single target)
+        if: ${{ !matrix.universal_macos }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Rust stable toolchain (macOS Universal arm64 + x86_64)
+        if: ${{ matrix.universal_macos }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo registry and target build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary (single target)
+        if: ${{ !matrix.universal_macos }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build macOS Universal2 binary (ARM64 + x86_64 via lipo)
+        if: ${{ matrix.universal_macos }}
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/VoiceBridge \
+            target/x86_64-apple-darwin/release/VoiceBridge \
+            -output target/universal-apple-darwin/release/VoiceBridge
+          codesign --force --sign - target/universal-apple-darwin/release/VoiceBridge
+          lipo -info target/universal-apple-darwin/release/VoiceBridge
+
+      - name: Run unit tests
+        if: ${{ !matrix.universal_macos }}
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test CLI on Unix (--help)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} --help
+
+      - name: Smoke test CLI on Windows (--help)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\target\${{ matrix.target }}\release\${{ matrix.bin }} --help
+
+      - name: Build macOS .dmg Disk Image (VoiceBridge.app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9] ]]; then
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PKG_VERSION="0.1.0"
+          fi
+          chmod +x packaging/macos/build_dmg.sh
+          ./packaging/macos/build_dmg.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
+            "dist/${{ matrix.artifact }}.dmg" \
+            "$PKG_VERSION"
+
+      - name: Build Linux .deb Package (dpkg-deb)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9] ]]; then
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PKG_VERSION="0.1.0"
+          fi
+          chmod +x packaging/linux/build_deb.sh
+          ./packaging/linux/build_deb.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
+            "${{ matrix.deb_arch }}" \
+            "dist/${{ matrix.artifact }}.deb" \
+            "$PKG_VERSION"
+
+      - name: Build Windows .exe Setup Installer (Inno Setup 6) & Standalone .exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -match '^v[0-9]') {
+            $pkgVersion = $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            $pkgVersion = "0.1.0"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+          # 1. Copy standalone single-file portable .exe
+          Copy-Item "target\${{ matrix.target }}\release\VoiceBridge.exe" "dist\${{ matrix.artifact }}.exe" -Force
+
+          # 2. Locate or install Inno Setup 6 (ISCC.exe) to compile Setup .exe
+          $isccCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $iscc) {
+            winget install --id JRSoftware.InnoSetup -e --silent --accept-package-agreements --accept-source-agreements
+            $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc -and (Get-Command choco -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y
+            $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) {
+            $innoTmp = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+            $innoDir = Join-Path $env:RUNNER_TEMP "InnoSetup6"
+            Invoke-WebRequest -Uri "https://files.jrsoftware.org/is/6/innosetup-6.4.2.exe" -OutFile $innoTmp
+            Start-Process -FilePath $innoTmp -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$innoDir" -Wait
+            $iscc = Join-Path $innoDir "ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "Failed to locate or install ISCC.exe (Inno Setup 6)"
+          }
+
+          $binRel = "..\..\target\${{ matrix.target }}\release\VoiceBridge.exe"
+          & $iscc `
+            "/DMyAppVersion=$pkgVersion" `
+            "/DMyArch=${{ matrix.inno_arch }}" `
+            "/DMyBinaryPath=$binRel" `
+            "/DMyOutputBaseFilename=${{ matrix.artifact }}-setup" `
+            "packaging\windows\installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC.exe failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload CI package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.pkg_glob }}
+          if-no-files-found: error
+
+      - name: Publish packages to GitHub Release (on tag push v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.pkg_glob }}
+          generate_release_notes: true

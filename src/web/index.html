@@ -1459,8 +1459,8 @@
 
     <!-- Footer -->
     <footer>
-        <div>VoiceBridge &bull; Zéro I/O Disque &bull; Accélération Hardware Metal GPU (Apple Silicon)</div>
-        <div id="footer-device">Périphérique : Micro MacBook Air</div>
+        <div id="footer-hw-info">VoiceBridge &bull; Zéro I/O Disque &bull; Accélération Hardware GPU / CPU</div>
+        <div id="footer-device">Périphérique : Périphérique par défaut</div>
     </footer>
 
     <script>
@@ -1734,11 +1734,12 @@
 
                 let statusBadge = '';
                 let actionBtnText = '';
+                const hwName = window.activeHardwareBackend || 'GPU / CPU';
                 if (m.is_active) {
-                    statusBadge = '<span class="tile-status-tag status-ready">● Actif sur Metal GPU</span>';
+                    statusBadge = `<span class="tile-status-tag status-ready">● Actif sur ${hwName}</span>`;
                     actionBtnText = '<span style="color: #34d399; font-weight: 700; font-size: 0.76rem;">✓ En Cours</span>';
                 } else if (m.is_installed) {
-                    statusBadge = '<span class="tile-status-tag status-ready">Installé Metal</span>';
+                    statusBadge = `<span class="tile-status-tag status-ready">Installé (${hwName})</span>`;
                     actionBtnText = '<span style="color: #38bdf8; font-weight: 600; font-size: 0.76rem;">Activer</span>';
                 } else if (m.is_local_gpu) {
                     statusBadge = `<span class="tile-status-tag status-download">À Télécharger</span>`;
@@ -1778,7 +1779,7 @@
         async function triggerLocalModelSwitch(model) {
             remoteConnectCard.style.display = 'none';
             if (model.is_active) {
-                showToast(`${model.name} est déjà actif sur votre GPU Metal.`);
+                showToast(`${model.name} est déjà actif (${window.activeHardwareBackend || 'GPU / CPU'}).`);
                 return;
             }
 
@@ -1833,7 +1834,7 @@
                             downloadPollTimer = null;
                             dlProgressBar.style.width = '100%';
                             dlPercent.textContent = '100%';
-                            dlStatusText.textContent = 'Modèle chargé avec succès sur Metal GPU !';
+                            dlStatusText.textContent = `Modèle chargé avec succès sur ${window.activeHardwareBackend || 'GPU / CPU'} !`;
                             showToast(`${modelDisplayName} prêt et actif !`);
                             setTimeout(() => {
                                 dlProgressBanner.classList.remove('active');
@@ -1856,6 +1857,14 @@
                     const data = await res.json();
                     currentVolume = data.current_volume;
                     updateMicState(data.is_recording);
+
+                    if (data.hardware_backend) {
+                        window.activeHardwareBackend = data.hardware_backend;
+                        const hwBadge = document.getElementById('header-metal-badge');
+                        if (hwBadge) hwBadge.textContent = data.hardware_backend;
+                        const footerHw = document.getElementById('footer-hw-info');
+                        if (footerHw) footerHw.innerHTML = `VoiceBridge &bull; Zéro I/O Disque &bull; Accélération Hardware ${data.hardware_backend}`;
+                    }
 
                     const shortModel = data.stt_model.split('/').pop();
                     footerModelName.textContent = shortModel;

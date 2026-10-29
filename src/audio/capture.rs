@@ -43,11 +43,18 @@ impl AudioCapture {
         rms_tx: Option<tokio::sync::watch::Sender<f32>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let host = cpal::default_host();
-        let device = match device_name {
-            Some(name) => host
-                .input_devices()?
-                .find(|d| d.to_string() == name)
-                .ok_or_else(|| format!("Audio device '{}' not found", name))?,
+        let device = match device_name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => match host.input_devices()?.find(|d| d.to_string() == name) {
+                Some(found) => found,
+                None => {
+                    tracing::warn!(
+                        "Configured audio device '{}' not found on this system; falling back to default input device.",
+                        name
+                    );
+                    host.default_input_device()
+                        .ok_or_else(|| "No default audio input device found")?
+                }
+            },
             None => host
                 .default_input_device()
                 .ok_or_else(|| "No default audio input device found")?,

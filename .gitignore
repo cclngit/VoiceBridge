@@ -1,9 +1,11 @@
-# Rust artifacts
+# Rust & package artifacts
 /target/
+/dist/
 **/*.rs.bk
 
 # Whisper GGML models
 /models/*.bin
+/models/*.part
 /models/*-distilled*
 /models/faster-whisper*
 

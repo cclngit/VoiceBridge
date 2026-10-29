@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=VoiceBridge
+GenericName=Speech-To-Text & Live Translator
+Comment=Reconnaissance vocale et traduction multilingue temps réel (Whisper / GPUI / OBS)
+Exec=/usr/bin/voicebridge
+Icon=voicebridge
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=speech;whisper;translation;obs;subtitles;asr;voicebridge;
+StartupWMClass=VoiceBridge
+

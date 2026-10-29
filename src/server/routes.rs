@@ -199,7 +199,11 @@ async fn switch_model_handler(
                     return Json(SwitchModelResponse {
                         success: true,
                         status: "ready".to_string(),
-                        message: format!("{} activé sur GPU Apple Silicon Metal.", model.name),
+                        message: format!(
+                            "{} activé ({}).",
+                            model.name,
+                            crate::stt::active_whisper_backend_label()
+                        ),
                         model_id: payload.model_id,
                     });
                 }
@@ -246,15 +250,16 @@ async fn switch_model_handler(
         let url_clone = download_url.clone();
 
         tokio::spawn(async move {
+            let hw = crate::stt::active_whisper_backend_label();
             tracing::info!("Starting background download of {}...", model_name);
             match download_model_with_progress(&path_clone, &download_url, &model_id, status_tracker.clone()).await {
                 Ok(_) => {
-                    tracing::info!("Model download complete. Reloading on Metal GPU...");
+                    tracing::info!("Model download complete. Reloading on {}...", hw);
                     let mut engine = whisper.lock().await;
                     if let Err(e) = engine.reload_model(&path_clone) {
                         tracing::error!("Failed to reload model after download: {}", e);
                         let mut st = status_tracker.write().await;
-                        st.error = Some(format!("Erreur GPU : {}", e));
+                        st.error = Some(format!("Erreur ({}) : {}", hw, e));
                         return;
                     }
 
@@ -265,7 +270,7 @@ async fn switch_model_handler(
                     cfg.stt.model_url = url_clone;
                     cfg.stt.model_name = model_name.clone();
                     let _ = cfg.save_to_file("config.json");
-                    tracing::info!("Model {} is now active on Metal GPU.", model_name);
+                    tracing::info!("Model {} is now active on {}.", model_name, hw);
                 }
                 Err(e) => {
                     tracing::error!("Failed to download model: {}", e);
@@ -329,8 +334,10 @@ async fn switch_model_handler(
                 success: false,
                 status: "offline".to_string(),
                 message: format!(
-                    "Serveur ASR distant injoignable sur {} ({}). Lancez votre serveur (vLLM / Speaches) ou conservez Whisper Metal GPU local.",
-                    target_url, e
+                    "Serveur ASR distant injoignable sur {} ({}). Lancez votre serveur (vLLM / Speaches) ou conservez Whisper {} local.",
+                    target_url,
+                    e,
+                    crate::stt::active_whisper_backend_label()
                 ),
                 model_id: payload.model_id,
             })
@@ -356,7 +363,10 @@ async fn test_stt_handler(
     if cfg.stt.engine_type == "whisper_local" {
         return Json(TestSttResponse {
             success: true,
-            message: "Whisper Metal GPU local est actif et prêt.".to_string(),
+            message: format!(
+                "Whisper local ({}) est actif et prêt.",
+                crate::stt::active_whisper_backend_label()
+            ),
         });
     }
 

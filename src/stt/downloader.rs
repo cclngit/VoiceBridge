@@ -244,7 +244,10 @@ pub async fn download_model_with_progress(
         st.is_downloading = false;
         st.downloaded_bytes = downloaded;
         st.percent = 100.0;
-        st.status_message = "Téléchargement terminé avec succès ! Chargement GPU Metal...".to_string();
+        st.status_message = format!(
+            "Téléchargement terminé avec succès ! Chargement {}...",
+            crate::stt::active_whisper_backend_label()
+        );
     }
 
     Ok(())

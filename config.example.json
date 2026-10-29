@@ -12,7 +12,7 @@
     "model_id": "whisper_turbo_q5",
     "model_path": "models/ggml-large-v3-turbo-q5_0.bin",
     "model_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    "model_name": "Whisper Large-v3-Turbo Q5_0 (Metal GPU)",
+    "model_name": "Whisper Large-v3-Turbo Q5_0",
     "api_url": "http://127.0.0.1:8000/v1/audio/transcriptions",
     "api_key": null,
     "language": "fr",

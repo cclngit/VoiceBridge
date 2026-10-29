@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod audio;
 mod config;
 mod gui;
@@ -43,7 +48,95 @@ struct Args {
     headless: bool,
 }
 
+#[cfg(windows)]
+fn attach_parent_console_if_needed() {
+    unsafe extern "system" {
+        fn AttachConsole(dwProcessId: u32) -> i32;
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+    unsafe {
+        // Only attach to an interactive parent terminal if stdout is not already redirected/piped.
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+/// Ensures the process runs in a writable data directory when launched from an installed
+/// system bundle (macOS `.app` from `.dmg` where `cwd == "/"`, Linux `.deb` `/usr/bin/voicebridge`,
+/// or Windows `Program Files\VoiceBridge`), while keeping `cargo run` / portable folders untouched.
+fn ensure_writable_app_workdir() {
+    let is_dev_or_portable = std::env::current_dir()
+        .ok()
+        .map(|cwd| {
+            if cwd.join("Cargo.toml").is_file() {
+                return true;
+            }
+            if cwd.join("config.json").is_file() {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(cwd.join("config.json"))
+                {
+                    drop(file);
+                    return true;
+                }
+            }
+            false
+        })
+        .unwrap_or(false);
+
+    if is_dev_or_portable {
+        return;
+    }
+
+    let user_data_dir: Option<PathBuf> = {
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var_os("HOME").map(|h| {
+                PathBuf::from(h)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("VoiceBridge")
+            })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .or_else(|| std::env::var_os("APPDATA"))
+                .map(|p| PathBuf::from(p).join("VoiceBridge"))
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(|p| PathBuf::from(p).join("VoiceBridge"))
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|h| {
+                        PathBuf::from(h)
+                            .join(".local")
+                            .join("share")
+                            .join("VoiceBridge")
+                    })
+                })
+        }
+    };
+
+    if let Some(app_dir) = user_data_dir {
+        if std::fs::create_dir_all(app_dir.join("models")).is_ok() {
+            let _ = std::env::set_current_dir(&app_dir);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(windows)]
+    attach_parent_console_if_needed();
+
+    let launch_cwd = std::env::current_dir().ok();
+    let args = Args::parse();
+    ensure_writable_app_workdir();
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -52,8 +145,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
 
-    let args = Args::parse();
-    let mut config = AppConfig::load_or_default(&args.config);
+    let config_path = if args.config != std::path::Path::new("config.json") && args.config.is_relative() {
+        launch_cwd
+            .as_ref()
+            .map(|cwd| cwd.join(&args.config))
+            .unwrap_or_else(|| args.config.clone())
+    } else {
+        args.config.clone()
+    };
+    let mut config = AppConfig::load_or_default(&config_path);
 
     if let Some(port) = args.port {
         config.server.port = port;

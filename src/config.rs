@@ -114,7 +114,7 @@ fn default_model_id() -> String {
     "whisper_tiny".to_string()
 }
 fn default_model_name() -> String {
-    "Whisper Tiny (Metal GPU)".to_string()
+    format!("Whisper Tiny ({})", crate::stt::active_whisper_backend_label())
 }
 fn default_api_url() -> String {
     "http://127.0.0.1:8000/v1/audio/transcriptions".to_string()

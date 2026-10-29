@@ -345,24 +345,43 @@ impl VoiceBridgeApp {
             }
         }
 
-        match std::process::Command::new("python3")
+        let (py_bin, py_prefix_args) = resolve_python_command();
+        let script_path = resolve_asr_script_path();
+        let mut cmd = std::process::Command::new(&py_bin);
+        cmd.args(&py_prefix_args)
             .env(
                 "PYTHONWARNINGS",
                 "ignore::UserWarning:multiprocessing.resource_tracker",
             )
-            .arg("scripts/asr_server.py")
-            .arg(model_name)
-            .spawn()
+            .arg(&script_path)
+            .arg(model_name);
+
+        #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        match cmd.spawn() {
             Ok(child) => {
                 let mut guard = self.local_asr_child.lock().unwrap();
                 *guard = Some(child);
                 self.local_server_status = format!("En ligne (Port 8000) — {}", model_name);
-                tracing::info!("Serveur ASR local démarré avec le modèle: {}", model_name);
+                tracing::info!(
+                    "Serveur ASR local démarré ({}) avec le modèle: {}",
+                    py_bin,
+                    model_name
+                );
             }
             Err(e) => {
                 self.local_server_status = format!("Erreur: {}", e);
-                tracing::error!("Impossible de lancer python3 scripts/asr_server.py: {}", e);
+                tracing::error!(
+                    "Impossible de lancer {} {}: {}",
+                    py_bin,
+                    script_path.display(),
+                    e
+                );
             }
         }
         cx.notify();
@@ -621,13 +640,12 @@ impl VoiceBridgeApp {
     // RENDER: TOP TITLEBAR
     // ═══════════════════════════════════════════════════════════════
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_gpu = cfg!(target_os = "macos");
         let active_engine_label = if self.active_engine == "remote_asr" {
             "Speaches / VibeVoice Engine"
         } else {
             "Whisper Large-v3-Turbo"
         };
-        let hw_label = if is_gpu { "Metal GPU" } else { "CPU" };
+        let hw_label = crate::stt::active_whisper_backend_label();
 
         TitleBar::new().child(
             h_flex()
@@ -1446,7 +1464,13 @@ impl VoiceBridgeApp {
                                             .justify_between()
                                             .items_center()
                                             .child(
-                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Whisper Local (Metal GPU & CPU)"),
+                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child(
+                                                    if let Some(gpu_label) = crate::stt::compiled_gpu_backend_label() {
+                                                        format!("Whisper Local ({} & CPU)", gpu_label)
+                                                    } else {
+                                                        "Whisper Local (CPU Multithread)".to_string()
+                                                    },
+                                                ),
                                             )
                                             .child(
                                                 if self.active_engine == "whisper_local" {
@@ -1457,7 +1481,7 @@ impl VoiceBridgeApp {
                                             ),
                                     )
                                     .child(
-                                        div().text_xs().text_color(TEXT_MUTED).child("100% Hors-ligne, ultra-rapide sur Apple Silicon GPU / CUDA / AVX2 (Serveur ASR coupé)."),
+                                        div().text_xs().text_color(TEXT_MUTED).child("100% Hors-ligne, ultra-rapide sur Metal GPU / CUDA / Vulkan / CPU multithread (Serveur ASR coupé)."),
                                     ),
                             )
                             .child(
@@ -1632,7 +1656,10 @@ impl VoiceBridgeApp {
                                 if self.is_downloading {
                                     div().text_xs().text_color(ACCENT_YELLOW).child(format!("Téléchargement en cours : {:.1}% - {}", self.download_pct, self.download_msg))
                                 } else {
-                                    div().text_xs().text_color(TEXT_MUTED).child("Activation automatique du serveur ASR ou du moteur Metal GPU")
+                                    div().text_xs().text_color(TEXT_MUTED).child(format!(
+                                        "Activation automatique du serveur ASR ou du moteur {}",
+                                        crate::stt::active_whisper_backend_label()
+                                    ))
                                 },
                             ),
                     )
@@ -2427,24 +2454,142 @@ impl Render for VoiceBridgeApp {
     }
 }
 
+/// Locates `scripts/asr_server.py` across dev workspaces, macOS `.app` bundles (`Contents/Resources`),
+/// Linux `.deb` FHS installs (`/usr/share/voicebridge`), Windows `Program Files`, or extracts the
+/// embedded copy into the writable application data directory for standalone single-file `.exe` runs.
+fn resolve_asr_script_path() -> PathBuf {
+    let local_rel = PathBuf::from("scripts").join("asr_server.py");
+    if local_rel.is_file() {
+        return local_rel;
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Windows installer / portable directory beside binary
+            let beside_exe = exe_dir.join("scripts").join("asr_server.py");
+            if beside_exe.is_file() {
+                return beside_exe;
+            }
+            // macOS VoiceBridge.app/Contents/Resources/scripts/asr_server.py
+            if let Some(contents_dir) = exe_dir.parent() {
+                let bundle_res = contents_dir
+                    .join("Resources")
+                    .join("scripts")
+                    .join("asr_server.py");
+                if bundle_res.is_file() {
+                    return bundle_res;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let deb_path = PathBuf::from("/usr/share/voicebridge/scripts/asr_server.py");
+        if deb_path.is_file() {
+            return deb_path;
+        }
+    }
+
+    // Fallback for standalone single-file executables: materialize embedded asr_server.py
+    const EMBEDDED_ASR_SERVER_PY: &str = include_str!("../../scripts/asr_server.py");
+    if std::fs::create_dir_all("scripts").is_ok() {
+        let _ = std::fs::write(&local_rel, EMBEDDED_ASR_SERVER_PY);
+    }
+    local_rel
+}
+
+/// Resolves a working Python 3 interpreter across macOS, Linux, and Windows.
+/// Checks local virtual environments first, then probes system commands with `--version`
+/// (avoiding Windows Microsoft Store `python3.exe` stubs that exit with code 9009).
+fn resolve_python_command() -> (String, Vec<String>) {
+    #[cfg(windows)]
+    let venv_candidates = [
+        std::path::Path::new(".venv").join("Scripts").join("python.exe"),
+        std::path::Path::new("venv").join("Scripts").join("python.exe"),
+    ];
+    #[cfg(not(windows))]
+    let venv_candidates = [
+        std::path::Path::new(".venv").join("bin").join("python3"),
+        std::path::Path::new(".venv").join("bin").join("python"),
+        std::path::Path::new("venv").join("bin").join("python3"),
+        std::path::Path::new("venv").join("bin").join("python"),
+    ];
+
+    for venv_py in &venv_candidates {
+        if venv_py.is_file() {
+            return (venv_py.to_string_lossy().into_owned(), Vec::new());
+        }
+    }
+
+    #[cfg(windows)]
+    let system_candidates: &[(&str, &[&str])] = &[
+        ("python", &[]),
+        ("py", &["-3"]),
+        ("python3", &[]),
+    ];
+    #[cfg(not(windows))]
+    let system_candidates: &[(&str, &[&str])] = &[
+        ("python3", &[]),
+        ("python", &[]),
+    ];
+
+    for (bin, prefix_args) in system_candidates {
+        let mut probe = std::process::Command::new(bin);
+        probe
+            .args(*prefix_args)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            probe.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        if let Ok(status) = probe.status() {
+            if status.success() {
+                return (
+                    (*bin).to_string(),
+                    prefix_args.iter().map(|s| (*s).to_string()).collect(),
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        ("python".to_string(), Vec::new())
+    }
+    #[cfg(not(windows))]
+    {
+        ("python3".to_string(), Vec::new())
+    }
+}
+
 #[cfg(unix)]
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-/// Gracefully stops the local Python ASR server with SIGTERM so Uvicorn and Python's
-/// `multiprocessing.resource_tracker` release semaphores cleanly before falling back to SIGKILL.
+/// Gracefully stops the local Python ASR server (sending SIGTERM first on Unix so Uvicorn and
+/// Python's `multiprocessing.resource_tracker` release semaphores cleanly before falling back to kill).
 fn terminate_asr_child(child: &mut std::process::Child) {
     #[cfg(unix)]
-    unsafe {
-        const SIGTERM: i32 = 15;
-        let _ = kill(child.id() as i32, SIGTERM);
-    }
-    for _ in 0..30 {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
+    {
+        unsafe {
+            const SIGTERM: i32 = 15;
+            let _ = kill(child.id() as i32, SIGTERM);
         }
-        std::thread::sleep(Duration::from_millis(15));
+        for _ in 0..30 {
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
     }
     let _ = child.kill();
     let _ = child.wait();

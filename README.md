@@ -8,11 +8,12 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://github.com/longbridge/gpui-kit"><img src="https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg" alt="GUI"></a>
   <a href="https://developer.apple.com/metal/"><img src="https://img.shields.io/badge/macOS-Metal_GPU-success.svg?logo=apple" alt="Metal GPU"></a>
+  <img src="https://img.shields.io/badge/Windows_%26_Linux-CUDA_%7C_Vulkan_%7C_CPU-0ea5e9.svg" alt="Windows & Linux">
   <a href="https://obsproject.com/"><img src="https://img.shields.io/badge/OBS-Browser_Source_Overlay-blue.svg" alt="OBS Studio"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultra-rapide et 100% hors-ligne, écrit en **Rust**. Doté d'une interface graphique native propulsée par **GPUI** (accélération matérielle Metal / Vulkan / DirectX), d'un moteur multi-modèles (Whisper Metal GPU, Qwen3-ASR, Voxtral, Canary, Moonshine, VibeVoice), d'une incrustation transparente pour **OBS Studio**, d'un streaming audio zéro-disque en mémoire et d'un cycle de vie automatique du serveur ASR.
+Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultra-rapide et 100% hors-ligne, écrit en **Rust** et compatible **macOS, Windows et Linux**. Doté d'une interface graphique native propulsée par **GPUI** (accélération matérielle Metal / DirectX / Vulkan), d'un moteur multi-modèles (Whisper GPU/CPU, Qwen3-ASR, Voxtral, Canary, Moonshine, VibeVoice), d'une incrustation transparente pour **OBS Studio**, d'un streaming audio zéro-disque en mémoire et d'un cycle de vie automatique du serveur ASR.
 
 ---
 
@@ -20,14 +21,15 @@ Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultr
 
 | Fonctionnalité | Ancienne version (Python) | VoiceBridge (Rust) |
 | :--- | :--- | :--- |
-| **Interface Graphique** | Aucune ou page web basique | **GUI native GPUI 60 FPS**, design Cyber Neon Dark, réactivité instantanée |
-| **Modèles STT / ASR** | Whisper Tiny uniquement | **Multi-Modèles** : Whisper (Metal GPU Apple Silicon), Qwen3-ASR, Voxtral, Canary, VibeVoice, Moonshine |
-| **Cycle de vie Serveur ASR** | Manuel / Scripts séparés | **Démarrage & arrêt 100% automatique** selon le modèle sélectionné |
+| **Compatibilité OS** | Scripts dépendants de l'environnement | **Multi-plateforme natif** : macOS (CoreAudio/Metal), Windows (WASAPI/DirectX), Linux (ALSA/Wayland/X11) |
+| **Interface Graphique** | Aucune ou page web basique | **GUI native GPUI 60–120 FPS**, design Cyber Neon Dark, réactivité instantanée |
+| **Modèles STT / ASR** | Whisper Tiny uniquement | **Multi-Modèles** : Whisper (Metal / CUDA / Vulkan / ROCm / CPU), Qwen3-ASR, Voxtral, Canary, VibeVoice, Moonshine |
+| **Cycle de vie Serveur ASR** | Manuel / Scripts séparés | **Démarrage & arrêt 100% automatique** selon le modèle sélectionné (`.venv`, `python3`, `python`, `py -3`) |
 | **Incrustation OBS Studio** | Page web statique opaque | **Overlay OBS transparent dédié (`/obs`)** avec thèmes (Dual, Glow, Netflix, Studio) |
 | **Personnalisation VAD** | Réglages figés | **Sensibilité RMS, silence de fin de phrase et durées de segment** modifiables en direct |
 | **Entrées/Sorties Disque** | Écritures/lectures continues de WAV | **Zéro écriture disque** : streaming 100% en mémoire (*in-memory ring buffers*) |
-| **Accélération Matérielle** | PyTorch / CTranslate2 CPU | **Metal GPU natif Apple Silicon (M1 à M4)** via `whisper.cpp` + CPU multithreadé |
-| **Autonomie & Poids** | 8 à 12 Go d'environnement Python | **Binaire unique autonome** avec assets HTML/CSS intégrés à la compilation |
+| **Accélération Matérielle** | PyTorch / CTranslate2 CPU | **Metal GPU (Apple Silicon)** par défaut sur macOS, features **CUDA / Vulkan / ROCm** + CPU multithread sur Windows & Linux |
+| **Autonomie & Poids** | 8 à 12 Go d'environnement Python | **Binaire unique autonome** avec assets HTML/CSS/PNG intégrés à la compilation |
 
 ---
 
@@ -42,6 +44,13 @@ VoiceBridge/
 ├── LICENSE                     # Licence MIT
 ├── README.md                   # Documentation principale du projet
 │
+├── .github/workflows/
+│   └── ci.yml                  # Build & packaging multi-OS (.dmg macOS, .deb Linux, .exe Windows)
+├── build.rs                    # Intégration de l'icône Windows (.ico) dans VoiceBridge.exe
+├── packaging/                  # Scripts et manifestes d'installateurs natifs
+│   ├── macos/                  # Info.plist et build_dmg.sh (VoiceBridge.app + .dmg)
+│   ├── linux/                  # voicebridge.desktop et build_deb.sh (paquet .deb via dpkg-deb)
+│   └── windows/                # VoiceBridge.ico, voicebridge.rc et installer.iss (Inno Setup .exe)
 ├── docs/                       # Spécifications et documentation d'architecture
 │   ├── DESIGN.md               # Système de design (palette Cyber Neon Dark, typographie, tokens)
 │   └── screen.png              # Capture d'écran de l'interface
@@ -52,7 +61,8 @@ VoiceBridge/
 │
 ├── scripts/                    # Scripts utilitaires pour le serveur ASR local
 │   ├── asr_server.py           # Serveur ASR OpenAI-compatible (shim PyAV, auto-mappage des modèles)
-│   ├── start_local_asr.sh      # Script bash de démarrage rapide (port 8000)
+│   ├── start_local_asr.sh      # Script bash de démarrage rapide macOS / Linux (port 8000)
+│   ├── start_local_asr.bat     # Script batch de démarrage rapide Windows (port 8000)
 │   └── README.md               # Guide d'utilisation des scripts
 │
 └── src/                        # Code source Rust modulaire
@@ -142,25 +152,66 @@ http://localhost:3000/obs?mode=dual&theme=glow&size=34&fade=6
 
 ---
 
-## 🚀 Compilation & Lancement
+## 🚀 Compilation & Lancement (macOS, Windows, Linux)
 
-### Prérequis
+### Prérequis par système d'exploitation
 
-- **Rust** (stable, édition 2024) : `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- **Python 3** (optionnel, uniquement pour les modèles nécessitant le serveur ASR local)
+- **Commun** :
+  - **Rust** (stable, édition 2024) : [rustup.rs](https://rustup.rs/)
+  - **CMake** & **Clang / LLVM** (requis pour compiler `whisper.cpp` via `whisper-rs`)
+  - **Python 3** *(optionnel)* : uniquement pour les modèles basés sur le serveur ASR local (`scripts/asr_server.py`)
+- **macOS (Apple Silicon ARM64 & Intel / Universal2)** :
+  - Xcode Command Line Tools : `xcode-select --install` *(Metal GPU activé automatiquement)*
+- **Windows 10 / 11 (x86_64 & ARM64 Copilot+ / Snapdragon X)** :
+  - *Visual Studio Build Tools* (charge de travail *Développement Desktop en C++* + *Compilateur C++ Clang pour Windows* sur ARM64 + Windows SDK)
+  - *CMake* et *LLVM* (`winget install Kitware.CMake LLVM.LLVM`)
+- **Linux (Ubuntu / Debian — x86_64 & ARM64 / aarch64)** :
+  ```bash
+  sudo apt-get update && sudo apt-get install -y \
+    build-essential cmake pkg-config clang libclang-dev libssl-dev \
+    libasound2-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+    libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+    libxcb-shm0-dev libxcb-randr0-dev libxcb-xkb-dev libxcb-xinput-dev \
+    libx11-dev libx11-xcb-dev libxrandr-dev libxi-dev libxcursor-dev \
+    libfontconfig1-dev libfreetype-dev libdbus-1-dev libvulkan-dev
+  ```
 
-### Commandes
+### Commandes de compilation
 
 ```bash
-# Compilation et lancement en mode release (optimisé GPU) :
+# macOS (Metal GPU activé par défaut) ou Windows / Linux (CPU multithread par défaut) :
 cargo run --release
 
-# Lancement direct du binaire compilé :
+# Windows / Linux avec accélération GPU NVIDIA CUDA (nécessite CUDA Toolkit) :
+cargo run --release --features cuda
+
+# Windows / Linux avec accélération GPU universelle Vulkan (NVIDIA / AMD / Intel) :
+cargo run --release --features vulkan
+
+# Linux avec accélération GPU AMD ROCm / hipBLAS :
+cargo run --release --features hipblas
+
+# Mode headless / serveur uniquement (sans interface graphique de bureau, ex. VPS / Docker) :
+cargo run --release -- --headless
+```
+
+### Exécution directe du binaire compilé
+
+```bash
+# macOS / Linux :
 ./target/release/VoiceBridge
 
-# Mode headless / serveur uniquement (sans interface graphique de bureau) :
-./target/release/VoiceBridge --headless
+# Windows (PowerShell / CMD) :
+.\target\release\VoiceBridge.exe
 ```
+
+> **CI / Installateurs natifs multi-OS & multi-architectures (`.dmg`, `.deb`, `.exe`)** : Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) compile, teste et génère automatiquement les installateurs natifs pour chaque architecture à chaque push ou tag `v*` :
+> - **macOS ARM64 (`.dmg`)** : `VoiceBridge-macos-arm64.dmg` (`VoiceBridge.app` signé ad-hoc + icône `.icns` + raccourci `Applications`)
+> - **macOS Universal2 (`.dmg`)** : `VoiceBridge-macos-universal.dmg` (binaire universel `arm64` + `x86_64` via `lipo`)
+> - **Linux x86_64 (`.deb`)** : `VoiceBridge-linux-amd64.deb` (paquet Debian/Ubuntu généré via `dpkg-deb` avec lanceur `.desktop`)
+> - **Linux ARM64 (`.deb`)** : `VoiceBridge-linux-arm64.deb` (paquet Debian/Ubuntu `arm64` généré via `dpkg-deb`)
+> - **Windows x86_64 (`.exe`)** : `VoiceBridge-windows-x86_64-setup.exe` (installateur graphique Inno Setup) + `VoiceBridge-windows-x86_64.exe` (exécutable portable autonome)
+> - **Windows ARM64 (`.exe`)** : `VoiceBridge-windows-arm64-setup.exe` (installateur natif Windows on ARM / Copilot+ / Snapdragon X) + `VoiceBridge-windows-arm64.exe` (exécutable portable autonome)
 
 ---
 

@@ -1,5 +1,33 @@
 use serde::{Deserialize, Serialize};
 
+/// Returns the compiled hardware GPU backend label for `whisper.cpp`, if any.
+pub const fn compiled_gpu_backend_label() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("Metal GPU")
+    } else if cfg!(feature = "cuda") {
+        Some("CUDA GPU")
+    } else if cfg!(feature = "vulkan") {
+        Some("Vulkan GPU")
+    } else if cfg!(feature = "hipblas") {
+        Some("ROCm GPU")
+    } else {
+        None
+    }
+}
+
+/// Returns whether a GPU backend (`metal`, `cuda`, `vulkan`, or `hipblas`) was compiled in.
+pub const fn has_compiled_gpu_backend() -> bool {
+    compiled_gpu_backend_label().is_some()
+}
+
+/// Returns the human-readable default Whisper execution backend (`Metal GPU`, `CUDA GPU`, `Vulkan GPU`, `ROCm GPU`, or `CPU`).
+pub const fn active_whisper_backend_label() -> &'static str {
+    match compiled_gpu_backend_label() {
+        Some(gpu) => gpu,
+        None => "CPU",
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     pub id: String,
@@ -18,13 +46,14 @@ pub struct ModelMetadata {
 }
 
 pub fn get_available_models() -> Vec<ModelMetadata> {
+    let hw = active_whisper_backend_label();
     vec![
-        // Local Whisper Models (Metal GPU on Apple Silicon)
+        // Local Whisper Models (Metal / CUDA / Vulkan / ROCm GPU or multithreaded CPU)
         ModelMetadata {
             id: "whisper_tiny".to_string(),
-            name: "Whisper Tiny (Metal GPU)".to_string(),
+            name: format!("Whisper Tiny ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
-            description: "Modèle ultra-rapide (75 Mo). Tourne à plus de 10x la vitesse réelle sur Apple Silicon. Idéal pour une latence minimale.".to_string(),
+            description: "Modèle ultra-rapide (75 Mo). Tourne à plus de 10x la vitesse réelle en local. Idéal pour une latence minimale.".to_string(),
             default_engine: "whisper_local".to_string(),
             default_model_name: "models/ggml-tiny.bin".to_string(),
             default_api_url: "".to_string(),
@@ -37,7 +66,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_base".to_string(),
-            name: "Whisper Base (Metal GPU)".to_string(),
+            name: format!("Whisper Base ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Le compromis idéal rapidité/précision (142 Mo). Très bonne reconnaissance des accents et de la ponctuation.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -52,7 +81,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_small".to_string(),
-            name: "Whisper Small (Metal GPU)".to_string(),
+            name: format!("Whisper Small ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Haute précision (466 Mo). Excellent pour le vocabulaire technique et les phrases complexes avec peu de fautes.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -67,7 +96,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_small_q5".to_string(),
-            name: "Whisper Small Q5_1 (Metal GPU)".to_string(),
+            name: format!("Whisper Small Q5_1 ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Version quantisée ultra-compacte (190 Mo). Offre 95% de la précision de Small tout en occupant 2.5x moins de mémoire RAM.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -82,7 +111,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_medium".to_string(),
-            name: "Whisper Medium (Metal GPU)".to_string(),
+            name: format!("Whisper Medium ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Qualité studio (1.5 Go). Compréhension phénoménale du français, des accents et des termes techniques.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -97,7 +126,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_medium_q5".to_string(),
-            name: "Whisper Medium Q5_0 (Metal GPU)".to_string(),
+            name: format!("Whisper Medium Q5_0 ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Modèle Medium compressé en 515 Mo. La richesse du Medium avec la légèreté et la vitesse d'un petit modèle !".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -112,9 +141,9 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_turbo".to_string(),
-            name: "Whisper Large-v3-Turbo (Metal GPU)".to_string(),
+            name: format!("Whisper Large-v3-Turbo ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
-            description: "Le sommet de la vitesse et précision Whisper (1.5 Go). Architecture distillée Turbo optimisée sur GPU Apple Silicon.".to_string(),
+            description: "Le sommet de la vitesse et précision Whisper (1.5 Go). Architecture distillée Turbo optimisée pour l'inférence locale.".to_string(),
             default_engine: "whisper_local".to_string(),
             default_model_name: "models/ggml-large-v3-turbo.bin".to_string(),
             default_api_url: "".to_string(),
@@ -127,9 +156,9 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_turbo_q5".to_string(),
-            name: "Whisper Large-v3-Turbo Q5_0 (Metal GPU)".to_string(),
+            name: format!("Whisper Large-v3-Turbo Q5_0 ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
-            description: "La puissance ultime de Turbo en 547 Mo seulement ! Idéal pour les MacBook Air et les configurations 8-16 Go RAM.".to_string(),
+            description: "La puissance ultime de Turbo en 547 Mo seulement ! Idéal pour les machines de 8 à 16 Go de RAM.".to_string(),
             default_engine: "whisper_local".to_string(),
             default_model_name: "models/ggml-large-v3-turbo-q5_0.bin".to_string(),
             default_api_url: "".to_string(),
@@ -142,7 +171,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_large_v3".to_string(),
-            name: "Whisper Large-v3 (Metal GPU)".to_string(),
+            name: format!("Whisper Large-v3 ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "La référence absolue mondiale OpenAI (2.9 Go). 128 bandes Mel, vocabulaire intégral et taux d'erreur minimum absolu.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -157,7 +186,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "whisper_large_v3_q5".to_string(),
-            name: "Whisper Large-v3 Q5_0 (Metal GPU)".to_string(),
+            name: format!("Whisper Large-v3 Q5_0 ({})", hw),
             provider: "OpenAI / whisper.cpp".to_string(),
             description: "Large-v3 complet quantisé en 1 Go. Qualité maximale avec une consommation mémoire et disque divisée par 3.".to_string(),
             default_engine: "whisper_local".to_string(),
@@ -172,7 +201,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "distil_whisper_large_v3".to_string(),
-            name: "Distil-Whisper Large-v3 (Metal GPU)".to_string(),
+            name: format!("Distil-Whisper Large-v3 ({})", hw),
             provider: "Hugging Face / whisper.cpp".to_string(),
             description: "Modèle distillé par Hugging Face (756 Mo). 6x plus rapide que Large-v3 avec moins de 1% d'écart de WER.".to_string(),
             default_engine: "whisper_local".to_string(),

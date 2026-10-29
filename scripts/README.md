@@ -18,12 +18,16 @@ python3 scripts/asr_server.py [modele]
 python3 scripts/asr_server.py Systran/faster-whisper-base
 ```
 
-## 2. `start_local_asr.sh`
+## 2. `start_local_asr.sh` (macOS & Linux) / `start_local_asr.bat` (Windows)
 
-Script shell pour lancer le serveur ASR local en ligne de commande :
+Scripts pour lancer le serveur ASR local en ligne de commande :
 
 ```bash
+# macOS / Linux :
 ./scripts/start_local_asr.sh [modele]
+
+# Windows (PowerShell / CMD) :
+scripts\start_local_asr.bat [modele]
 ```
 
 Par défaut, écoute sur `http://127.0.0.1:8000`.
