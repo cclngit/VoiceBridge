@@ -2361,7 +2361,7 @@ impl VoiceBridgeApp {
                             .text_xs()
                             .font_medium()
                             .text_color(TEXT_DIM)
-                            .child("VoiceBridge Pro"),
+                            .child("VoiceBridge"),
                     ),
             )
     }

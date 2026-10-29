@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VoiceBridge Pro — Local ASR Server Wrapper
+VoiceBridge — Local ASR Server Wrapper
 Ensures 100% PyAV compatibility across all versions on macOS / Linux / Windows.
 """
 import os

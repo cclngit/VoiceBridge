@@ -1,15 +1,19 @@
 <!DOCTYPE html>
 <html lang="fr" class="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="VoiceBridge Pro — Interface haute performance de reconnaissance vocale et traduction instantanée multi-modèles (Whisper Metal GPU, Qwen3-ASR, Voxtral, Canary, VibeVoice) avec intégration OBS Studio.">
-    <title>VoiceBridge Pro — Speech & Neural Translation Studio</title>
+    <meta name="description"
+        content="VoiceBridge — Interface haute performance de reconnaissance vocale et traduction instantanée multi-modèles (Whisper Metal GPU, Qwen3-ASR, Voxtral, Canary, VibeVoice) avec intégration OBS Studio.">
+    <title>VoiceBridge — Speech & Neural Translation Studio</title>
 
     <!-- Google Fonts: Syne (Awwwards Display), Plus Jakarta Sans, JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&display=swap"
+        rel="stylesheet">
 
     <style>
         :root {
@@ -109,9 +113,17 @@
         }
 
         @keyframes orbFloat {
-            0% { transform: translate(0, 0) scale(1); }
-            50% { transform: translate(80px, 60px) scale(1.08); }
-            100% { transform: translate(-60px, 100px) scale(0.94); }
+            0% {
+                transform: translate(0, 0) scale(1);
+            }
+
+            50% {
+                transform: translate(80px, 60px) scale(1.08);
+            }
+
+            100% {
+                transform: translate(-60px, 100px) scale(0.94);
+            }
         }
 
         /* Subtle Noise Grain Overlay */
@@ -217,8 +229,17 @@
         }
 
         @keyframes radarPulse {
-            0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(0.7); opacity: 0.4; }
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(0.7);
+                opacity: 0.4;
+            }
         }
 
         .nav-controls {
@@ -394,7 +415,9 @@
         }
 
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .dl-stats {
@@ -425,8 +448,13 @@
         }
 
         @keyframes shimmerGradient {
-            0% { background-position: 100% 0; }
-            100% { background-position: -100% 0; }
+            0% {
+                background-position: 100% 0;
+            }
+
+            100% {
+                background-position: -100% 0;
+            }
         }
 
         /* Dual Translation Stage (Haute Horlogerie / Editorial Deck) */
@@ -682,6 +710,7 @@
         .feed-list::-webkit-scrollbar {
             width: 6px;
         }
+
         .feed-list::-webkit-scrollbar-thumb {
             background: rgba(255, 255, 255, 0.12);
             border-radius: 9999px;
@@ -731,8 +760,15 @@
         }
 
         @keyframes slideInRow {
-            from { opacity: 0; transform: translateY(-8px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         /* Modal Settings & Model Switcher */
@@ -758,8 +794,13 @@
         }
 
         @keyframes modalFade {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
         }
 
         .modal-container {
@@ -916,9 +957,18 @@
         .tile-status-tag {
             font-weight: 600;
         }
-        .status-ready { color: #34d399; }
-        .status-download { color: #f59e0b; }
-        .status-remote { color: #a5b4fc; }
+
+        .status-ready {
+            color: #34d399;
+        }
+
+        .status-download {
+            color: #f59e0b;
+        }
+
+        .status-remote {
+            color: #a5b4fc;
+        }
 
         /* Form Controls */
         .form-group {
@@ -933,7 +983,8 @@
             color: #f1f5f9;
         }
 
-        .form-input, .form-select {
+        .form-input,
+        .form-select {
             width: 100%;
             background: rgba(0, 0, 0, 0.4);
             border: 1px solid var(--border-glass);
@@ -946,7 +997,8 @@
             transition: border-color 0.2s ease;
         }
 
-        .form-input:focus, .form-select:focus {
+        .form-input:focus,
+        .form-select:focus {
             border-color: #38bdf8;
         }
 
@@ -980,8 +1032,15 @@
         }
 
         @keyframes toastPop {
-            from { transform: translateY(12px) scale(0.95); opacity: 0; }
-            to { transform: translateY(0) scale(1); opacity: 1; }
+            from {
+                transform: translateY(12px) scale(0.95);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+            }
         }
 
         footer {
@@ -997,6 +1056,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="ambient-mesh">
         <div class="orb orb-1"></div>
@@ -1009,12 +1069,17 @@
     <header>
         <div class="brand-group">
             <div class="brand-gem">
-                <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                <svg viewBox="0 0 24 24">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                    <path
+                        d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                </svg>
             </div>
             <div class="brand-info">
-                <h1>VoiceBridge Pro</h1>
+                <h1>VoiceBridge</h1>
                 <p>
-                    <span class="pill-chip pill-live"><span class="radar-dot"></span> <span id="header-status-label">EN LIGNE</span></span>
+                    <span class="pill-chip pill-live"><span class="radar-dot"></span> <span id="header-status-label">EN
+                            LIGNE</span></span>
                     <span id="header-metal-badge">Apple Silicon Metal GPU</span>
                     <span id="header-engine-label">&bull; Whisper Tiny &bull; FR</span>
                 </p>
@@ -1022,16 +1087,27 @@
         </div>
 
         <div class="nav-controls">
-            <button class="btn-luxury btn-obs-action" id="btn-open-obs" title="Configurer les sous-titres pour OBS Studio">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg>
+            <button class="btn-luxury btn-obs-action" id="btn-open-obs"
+                title="Configurer les sous-titres pour OBS Studio">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z" />
+                </svg>
                 OBS Studio Overlay
             </button>
             <button class="btn-luxury" id="btn-open-settings" title="Paramètres & Sélection des Modèles">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                        d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                </svg>
                 Modèles & Réglages
             </button>
             <button class="btn-luxury btn-mic-toggle" id="btn-toggle-mic">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                    <path
+                        d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                </svg>
                 <span id="mic-label">Micro Actif</span>
             </button>
         </div>
@@ -1063,7 +1139,8 @@
                         <span id="dl-model-name">Téléchargement du Modèle...</span>
                     </div>
                     <div class="dl-stats">
-                        <span id="dl-percent">0.0%</span> &bull; <span id="dl-bytes">0 / 0 Mo</span> &bull; <span id="dl-speed">0.0 Mo/s</span>
+                        <span id="dl-percent">0.0%</span> &bull; <span id="dl-bytes">0 / 0 Mo</span> &bull; <span
+                            id="dl-speed">0.0 Mo/s</span>
                     </div>
                 </div>
                 <div class="dl-progress-track">
@@ -1079,21 +1156,27 @@
             <div class="stage-card">
                 <div class="card-top">
                     <div class="lang-identity">
-                        <span class="lang-pill" id="source-badge" style="cursor: pointer;" title="Cliquer pour changer la langue source">FR</span>
+                        <span class="lang-pill" id="source-badge" style="cursor: pointer;"
+                            title="Cliquer pour changer la langue source">FR</span>
                         <div class="card-label" id="source-card-label">Discours Verrouillé (FR)</div>
                     </div>
                     <div class="card-tools">
                         <button class="tool-btn" id="btn-copy-source" title="Copier le texte original">
-                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                            <svg viewBox="0 0 24 24">
+                                <path
+                                    d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
+                            </svg>
                         </button>
                     </div>
                 </div>
                 <div class="stage-content">
                     <div id="source-speaker-wrap"></div>
-                    <div class="speech-output empty" id="source-live-text">Parlez dans votre microphone pour démarrer la capture vocale...</div>
+                    <div class="speech-output empty" id="source-live-text">Parlez dans votre microphone pour démarrer la
+                        capture vocale...</div>
                 </div>
                 <div class="stage-footer">
-                    <div>Moteur ASR : <span id="footer-model-name" style="color: #cbd5e1;">Whisper (Metal GPU)</span></div>
+                    <div>Moteur ASR : <span id="footer-model-name" style="color: #cbd5e1;">Whisper (Metal GPU)</span>
+                    </div>
                     <div class="latency-chip">STT : <span id="metric-stt">0</span> ms</div>
                 </div>
             </div>
@@ -1102,25 +1185,35 @@
             <div class="stage-card">
                 <div class="card-top">
                     <div class="lang-identity">
-                        <span class="lang-pill" id="target-badge" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); cursor: pointer;" title="Cliquer pour changer la langue de traduction">EN</span>
+                        <span class="lang-pill" id="target-badge"
+                            style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); cursor: pointer;"
+                            title="Cliquer pour changer la langue de traduction">EN</span>
                         <div class="card-label">Traduction Instantanée</div>
                     </div>
                     <div class="card-tools">
                         <button class="tool-btn" id="btn-tts" title="Écouter la traduction (Synthèse Vocale)">
-                            <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                            <svg viewBox="0 0 24 24">
+                                <path
+                                    d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                            </svg>
                         </button>
                         <button class="tool-btn" id="btn-copy-target" title="Copier la traduction">
-                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                            <svg viewBox="0 0 24 24">
+                                <path
+                                    d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
+                            </svg>
                         </button>
                     </div>
                 </div>
                 <div class="stage-content">
                     <div id="target-speaker-wrap"></div>
-                    <div class="translated-output empty" id="target-live-text">La traduction française apparaîtra ici en temps réel...</div>
+                    <div class="translated-output empty" id="target-live-text">La traduction française apparaîtra ici en
+                        temps réel...</div>
                 </div>
                 <div class="stage-footer">
                     <div>Traducteur : <span style="color: #38bdf8;">⚡ Neural MT Direct</span></div>
-                    <div class="latency-chip" style="color: #a78bfa;">Traduction : <span id="metric-trans">0</span> ms</div>
+                    <div class="latency-chip" style="color: #a78bfa;">Traduction : <span id="metric-trans">0</span> ms
+                    </div>
                 </div>
             </div>
         </section>
@@ -1129,7 +1222,10 @@
         <section class="feed-section">
             <div class="feed-header">
                 <div class="feed-title">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                            d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
+                    </svg>
                     Flux Chronologique des Phrases
                 </div>
                 <div class="feed-actions">
@@ -1152,7 +1248,10 @@
             <div class="modal-header">
                 <h3>Panneau de Contrôle & Modèles</h3>
                 <button class="tool-btn" id="btn-close-modal">
-                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                    </svg>
                 </button>
             </div>
 
@@ -1167,45 +1266,69 @@
                 <!-- Tab 1: Models Picker -->
                 <div class="tab-panel active" id="tab-models">
                     <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5;">
-                        <span style="color: #38bdf8; font-weight: 600;">✨ 11 Modèles 100% Locaux Intégrés (GPU Metal) :</span> Téléchargement en 1 clic et exécution directe sur votre Mac Apple Silicon sans aucun serveur externe.<br>
-                        <span style="color: #a5b4fc; font-weight: 600;">🚀 Modèles Avancés SOTA (Qwen3, Voxtral, Canary, Moonshine) :</span> Exécutables également à 100% en local sur votre Mac via un serveur local ultra-rapide (ex: Speaches sur <code>127.0.0.1:8000</code>).
+                        <span style="color: #38bdf8; font-weight: 600;">✨ 11 Modèles 100% Locaux Intégrés (GPU Metal)
+                            :</span> Téléchargement en 1 clic et exécution directe sur votre Mac Apple Silicon sans
+                        aucun serveur externe.<br>
+                        <span style="color: #a5b4fc; font-weight: 600;">🚀 Modèles Avancés SOTA (Qwen3, Voxtral, Canary,
+                            Moonshine) :</span> Exécutables également à 100% en local sur votre Mac via un serveur local
+                        ultra-rapide (ex: Speaches sur <code>127.0.0.1:8000</code>).
                     </div>
                     <div class="models-deck-grid" id="models-deck-grid">
                         <!-- Loaded dynamically -->
                     </div>
 
                     <!-- Remote Model Connect Sheet -->
-                    <div id="remote-connect-card" style="display: none; margin-top: 22px; padding: 22px; background: rgba(10, 15, 26, 0.95); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 16px; box-shadow: 0 20px 40px -10px rgba(0,0,0,0.9);">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+                    <div id="remote-connect-card"
+                        style="display: none; margin-top: 22px; padding: 22px; background: rgba(10, 15, 26, 0.95); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 16px; box-shadow: 0 20px 40px -10px rgba(0,0,0,0.9);">
+                        <div
+                            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
                             <div style="display: flex; align-items: center; gap: 10px;">
-                                <div style="width: 10px; height: 10px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 10px #38bdf8;"></div>
-                                <strong style="color: #ffffff; font-size: 1.05rem;" id="remote-card-name">Configuration du Modèle Distant</strong>
+                                <div
+                                    style="width: 10px; height: 10px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 10px #38bdf8;">
+                                </div>
+                                <strong style="color: #ffffff; font-size: 1.05rem;" id="remote-card-name">Configuration
+                                    du Modèle Distant</strong>
                             </div>
                             <button class="tool-btn" id="btn-close-remote-card">
-                                <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                                <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                                </svg>
                             </button>
                         </div>
-                        <div id="remote-card-desc" style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 16px; line-height: 1.45;"></div>
+                        <div id="remote-card-desc"
+                            style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 16px; line-height: 1.45;"></div>
                         <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px;">
                             <div>
-                                <label class="form-label" style="font-size: 0.78rem;">Endpoint ASR (URL compatible OpenAI / Speaches / vLLM)</label>
-                                <input type="text" class="form-input" id="remote-input-url" value="http://127.0.0.1:8000/v1/audio/transcriptions">
+                                <label class="form-label" style="font-size: 0.78rem;">Endpoint ASR (URL compatible
+                                    OpenAI / Speaches / vLLM)</label>
+                                <input type="text" class="form-input" id="remote-input-url"
+                                    value="http://127.0.0.1:8000/v1/audio/transcriptions">
                             </div>
                             <div>
                                 <label class="form-label" style="font-size: 0.78rem;">Clé API (Optionnel)</label>
-                                <input type="password" class="form-input" id="remote-input-key" placeholder="Bearer token...">
+                                <input type="password" class="form-input" id="remote-input-key"
+                                    placeholder="Bearer token...">
                             </div>
                         </div>
-                        <div id="remote-test-banner" style="display: none; padding: 12px 16px; border-radius: 10px; font-size: 0.82rem; margin-bottom: 16px; line-height: 1.4;"></div>
+                        <div id="remote-test-banner"
+                            style="display: none; padding: 12px 16px; border-radius: 10px; font-size: 0.82rem; margin-bottom: 16px; line-height: 1.4;">
+                        </div>
                         <div style="display: flex; gap: 10px; align-items: center;">
                             <button class="btn-luxury" id="btn-test-remote-conn">Tester la connexion</button>
-                            <button class="btn-luxury btn-obs-action" id="btn-activate-remote">Connecter & Activer</button>
+                            <button class="btn-luxury btn-obs-action" id="btn-activate-remote">Connecter &
+                                Activer</button>
                         </div>
-                        <div style="margin-top: 18px; padding: 16px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; font-size: 0.78rem; color: #94a3b8; line-height: 1.55;">
-                            <strong style="color: #cbd5e1; font-size: 0.82rem;">💡 Comment héberger ce modèle en local sur votre Mac ?</strong><br>
+                        <div
+                            style="margin-top: 18px; padding: 16px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; font-size: 0.78rem; color: #94a3b8; line-height: 1.55;">
+                            <strong style="color: #cbd5e1; font-size: 0.82rem;">💡 Comment héberger ce modèle en local
+                                sur votre Mac ?</strong><br>
                             Pour lancer un serveur ASR local ultra-rapide sur votre Mac :<br>
-                            <code style="display: block; margin: 8px 0; padding: 8px 12px; background: #030508; border-radius: 8px; color: #38bdf8; font-family: var(--font-mono); border: 1px solid rgba(255,255,255,0.08);">pip install speaches && speaches --host 127.0.0.1 --port 8000</code>
-                            <span style="color: #a5b4fc;">✨ Ou utilisez directement les modèles <strong>Whisper Metal GPU</strong> locaux ci-dessus (Tiny, Base, Small, Turbo) : ils fonctionnent à 100% sans aucun serveur externe.</span>
+                            <code
+                                style="display: block; margin: 8px 0; padding: 8px 12px; background: #030508; border-radius: 8px; color: #38bdf8; font-family: var(--font-mono); border: 1px solid rgba(255,255,255,0.08);">pip install speaches && speaches --host 127.0.0.1 --port 8000</code>
+                            <span style="color: #a5b4fc;">✨ Ou utilisez directement les modèles <strong>Whisper Metal
+                                    GPU</strong> locaux ci-dessus (Tiny, Base, Small, Turbo) : ils fonctionnent à 100%
+                                sans aucun serveur externe.</span>
                         </div>
                     </div>
                 </div>
@@ -1216,7 +1339,8 @@
                     <div style="margin-bottom: 20px;">
                         <div class="form-label">URL de la Source Navigateur OBS Studio</div>
                         <div style="display: flex; gap: 8px;">
-                            <input type="text" class="form-input" id="obs-final-url" readonly value="http://127.0.0.1:3000/obs">
+                            <input type="text" class="form-input" id="obs-final-url" readonly
+                                value="http://127.0.0.1:3000/obs">
                             <button class="btn-luxury btn-obs-action" id="btn-copy-obs-modal">Copier</button>
                         </div>
                     </div>
@@ -1270,7 +1394,8 @@
                                 <option value="auto">⚡ Détection Automatique (Multilingue)</option>
                             </select>
                             <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 5px;">
-                                💡 Verrouiller sur <strong>Français</strong> coupe l'auto-détection et bloque les hallucinations dans d'autres langues.
+                                💡 Verrouiller sur <strong>Français</strong> coupe l'auto-détection et bloque les
+                                hallucinations dans d'autres langues.
                             </div>
                         </div>
                         <div class="form-group">
@@ -1309,12 +1434,16 @@
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                         <div class="form-group">
-                            <label class="form-label">Seuil de Détection de Voix (VAD) : <span id="val-vad-thresh">0.015</span></label>
-                            <input type="range" min="0.005" max="0.08" step="0.002" value="0.015" class="form-input" id="cfg-vad-threshold">
+                            <label class="form-label">Seuil de Détection de Voix (VAD) : <span
+                                    id="val-vad-thresh">0.015</span></label>
+                            <input type="range" min="0.005" max="0.08" step="0.002" value="0.015" class="form-input"
+                                id="cfg-vad-threshold">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Silence Fin de Phrase : <span id="val-vad-silence">700</span> ms</label>
-                            <input type="range" min="300" max="2000" step="50" value="700" class="form-input" id="cfg-vad-silence">
+                            <label class="form-label">Silence Fin de Phrase : <span id="val-vad-silence">700</span>
+                                ms</label>
+                            <input type="range" min="300" max="2000" step="50" value="700" class="form-input"
+                                id="cfg-vad-silence">
                         </div>
                     </div>
                 </div>
@@ -1332,7 +1461,7 @@
 
     <!-- Footer -->
     <footer>
-        <div>VoiceBridge Pro &bull; Zéro I/O Disque &bull; Accélération Hardware Metal GPU (Apple Silicon)</div>
+        <div>VoiceBridge &bull; Zéro I/O Disque &bull; Accélération Hardware Metal GPU (Apple Silicon)</div>
         <div id="footer-device">Périphérique : Micro MacBook Air</div>
     </footer>
 
@@ -1969,7 +2098,7 @@
 
         document.getElementById('btn-export-md').addEventListener('click', () => {
             if (eventHistory.length === 0) return alert('Aucune phrase à exporter.');
-            let md = '# VoiceBridge Pro — Transcriptions & Traductions\n\n| Heure | Locuteur | Original | Traduction | Latence |\n|---|---|---|---|---|\n';
+            let md = '# VoiceBridge — Transcriptions & Traductions\n\n| Heure | Locuteur | Original | Traduction | Latence |\n|---|---|---|---|---|\n';
             eventHistory.forEach(e => {
                 md += `| ${e.timestamp} | ${e.speaker || '-'} | ${e.original_text.replace(/\|/g, '-')} | ${e.translated_text.replace(/\|/g, '-')} | ${e.total_duration_ms}ms |\n`;
             });
@@ -2011,4 +2140,5 @@
         initSse();
     </script>
 </body>
+
 </html>

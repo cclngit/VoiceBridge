@@ -1,4 +1,4 @@
-# Modèles Whisper GGML (VoiceBridge Pro)
+# Modèles Whisper GGML (VoiceBridge)
 
 Ce répertoire héberge les modèles Whisper au format binaire GGML (`.bin`) utilisés pour l'inférence locale haute performance (accélération matérielle Apple Silicon Metal GPU et CPU AVX2).
 

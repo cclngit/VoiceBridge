@@ -2,7 +2,7 @@
 name = "SpeechToTextToTranslate"
 version = "0.1.0"
 edition = "2024"
-description = "VoiceBridge Pro — Real-time Speech-to-Text-to-Translate pipeline with local Metal GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
+description = "VoiceBridge — Real-time Speech-to-Text-to-Translate pipeline with local Metal GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
 readme = "README.md"
 license = "MIT"
 keywords = ["speech-to-text", "whisper", "translation", "obs", "gpui"]

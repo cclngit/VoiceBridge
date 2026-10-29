@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html lang="fr">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VoiceBridge Pro — OBS Subtitle Overlay</title>
+    <title>VoiceBridge — OBS Subtitle Overlay</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap"
+        rel="stylesheet">
     <style>
         * {
             box-sizing: border-box;
@@ -14,7 +16,8 @@
             padding: 0;
         }
 
-        html, body {
+        html,
+        body {
             width: 100vw;
             height: 100vh;
             background: transparent !important;
@@ -37,9 +40,11 @@
         .pos-bottom {
             bottom: 40px;
         }
+
         .pos-top {
             top: 40px;
         }
+
         .pos-center {
             top: 50%;
             transform: translateY(-50%);
@@ -69,13 +74,13 @@
             background: transparent;
             border: none;
             box-shadow: none;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.9), 0 0 10px rgba(0,0,0,0.8), 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9), 0 0 10px rgba(0, 0, 0, 0.8), 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
         }
 
         .theme-boxed .subtitle-box {
             background: rgba(0, 0, 0, 0.85);
             border: 2px solid #ffffff;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.7);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.7);
         }
 
         .theme-clean .subtitle-box {
@@ -95,19 +100,22 @@
             letter-spacing: 0.05em;
             margin-bottom: 8px;
             color: #ffffff;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
             animation: popIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         .speaker-1 {
             background: linear-gradient(135deg, #06b6d4, #3b82f6);
         }
+
         .speaker-2 {
             background: linear-gradient(135deg, #ec4899, #8b5cf6);
         }
+
         .speaker-3 {
             background: linear-gradient(135deg, #10b981, #059669);
         }
+
         .speaker-default {
             background: linear-gradient(135deg, #6366f1, #4f46e5);
         }
@@ -146,6 +154,7 @@
                 opacity: 0;
                 transform: translateY(8px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
@@ -157,6 +166,7 @@
                 opacity: 0;
                 transform: scale(0.8);
             }
+
             to {
                 opacity: 1;
                 transform: scale(1);
@@ -164,6 +174,7 @@
         }
     </style>
 </head>
+
 <body>
     <div id="overlay-container" class="pos-bottom theme-glow">
         <div class="subtitle-box" id="subtitle-box">
@@ -264,4 +275,5 @@
         resetFadeTimer();
     </script>
 </body>
+
 </html>

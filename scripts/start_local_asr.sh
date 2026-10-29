@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# VoiceBridge Pro — Serveur ASR Local OpenAI-Compatible (127.0.0.1:8000)
+# VoiceBridge — Serveur ASR Local OpenAI-Compatible (127.0.0.1:8000)
 # ==============================================================================
 
 set -e

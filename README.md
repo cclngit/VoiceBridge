@@ -1,4 +1,4 @@
-# VoiceBridge Pro — Speech To Text To Translate (Rust)
+# VoiceBridge — Speech To Text To Translate (Rust)
 
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![GUI](https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg)](https://github.com/longbridge/gpui-kit)
@@ -12,7 +12,7 @@ Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultr
 
 ## ⚡ Points Forts & Architecture
 
-| Fonctionnalité | Ancienne version (Python) | VoiceBridge Pro (Rust) |
+| Fonctionnalité | Ancienne version (Python) | VoiceBridge (Rust) |
 | :--- | :--- | :--- |
 | **Interface Graphique** | Aucune ou page web basique | **GUI native GPUI 60 FPS**, design Cyber Neon Dark, réactivité instantanée |
 | **Modèles STT / ASR** | Whisper Tiny uniquement | **Multi-Modèles** : Whisper (Metal GPU Apple Silicon), Qwen3-ASR, Voxtral, Canary, VibeVoice, Moonshine |
@@ -83,14 +83,16 @@ SpeechToTextToTranslate/
 
 ## 🎙️ Modèles Vocaux & Gestion Automatique du Serveur ASR
 
-VoiceBridge Pro prend en charge deux catégories de modèles, avec bascule intelligente :
+VoiceBridge prend en charge deux catégories de modèles, avec bascule intelligente :
 
 ### 1. Modèles Whisper Locaux (Accélération Metal GPU / CPU)
+
 - **Whisper Tiny, Base, Small, Turbo, Large-v3** : Exécution 100% hors-ligne sur votre processeur ou puce graphique Apple Silicon via `whisper.cpp`.
 - Téléchargeables en un clic depuis l'onglet **Modèles IA**. Dès la fin du téléchargement, le modèle est automatiquement chargé en mémoire et activé.
 - **Économie de ressources** : Lorsque vous utilisez un modèle Whisper local, le serveur ASR Python est **automatiquement éteint** pour libérer la RAM et le processeur.
 
 ### 2. Modèles Serveur ASR Local (OpenAI-compatible)
+
 - **Qwen3-ASR-1.7B, Voxtral, Canary, VibeVoice, Moonshine** :
 - **Lancement automatique** : Dès qu'un modèle serveur est sélectionné, VoiceBridge lance automatiquement le serveur local `scripts/asr_server.py` sur le port `8000`.
 
@@ -99,6 +101,7 @@ VoiceBridge Pro prend en charge deux catégories de modèles, avec bascule intel
 ## 🎛️ Réglages Audio & VAD (Détection Vocale)
 
 L'onglet **Audio & VAD** permet d'ajuster le comportement du découpage vocal à la volée :
+
 - **Sensibilité VAD (Seuil RMS)** : 0.8% (Chuchotements), 1.5% (Standard recommandé), 2.5% (Moyen), 4.0% (Micro fort ou environnement bruyant).
 - **Silence de fin de phrase** : 400 ms (Rapide / Streaming), 700 ms (Naturel), 1000 ms (Fluide), 1500 ms (Phrases longues).
 - **Durée minimale de parole** : 200 ms, 350 ms, 500 ms (élimine les clics et bruits de bouche).
@@ -116,7 +119,8 @@ Pour afficher vos sous-titres traduits en direct dans OBS Studio :
 3. Configurez les dimensions recommandées : **Largeur 1920, Hauteur 250**.
 4. Le fond est **100% transparent** et s'incruste sans nécessiter de fond vert.
 
-### Paramètres URL personnalisables :
+### Paramètres URL personnalisables
+
 - `mode=dual` : Texte original en petit au-dessus + traduction en grand au-dessous (défaut).
 - `mode=translated` : Traduction seule.
 - `mode=source` : Transcription originale seule.
@@ -125,6 +129,7 @@ Pour afficher vos sous-titres traduits en direct dans OBS Studio :
 - `fade=6` : Disparition automatique après 6 secondes de silence (`0` pour laisser affiché).
 
 Exemple :
+
 ```text
 http://localhost:3000/obs?mode=dual&theme=glow&size=34&fade=6
 ```
@@ -134,10 +139,12 @@ http://localhost:3000/obs?mode=dual&theme=glow&size=34&fade=6
 ## 🚀 Compilation & Lancement
 
 ### Prérequis
+
 - **Rust** (stable, édition 2024) : `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **Python 3** (optionnel, uniquement pour les modèles nécessitant le serveur ASR local)
 
 ### Commandes
+
 ```bash
 # Compilation et lancement en mode release (optimisé GPU) :
 cargo run --release

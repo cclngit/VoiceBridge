@@ -20,7 +20,7 @@ use translate::TranslationService;
 use vad::SpeechSegmenter;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "VoiceBridge Pro — Speech To Text To Translate in Rust")]
+#[command(author, version, about = "VoiceBridge — Speech To Text To Translate in Rust")]
 struct Args {
     /// Path to config.json
     #[arg(short, long, default_value = "config.json")]
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     println!("\n╔═══════════════════════════════════════════════════════════════╗");
-    println!("║       VoiceBridge Pro — Speech To Text To Translate (Rust)    ║");
+    println!("║       VoiceBridge — Speech To Text To Translate (Rust)    ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
     // 1. Build Multi-threaded Tokio Runtime
