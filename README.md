@@ -34,7 +34,7 @@ Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultr
 ## 📁 Organisation du Répertoire
 
 ```text
-SpeechToTextToTranslate/
+VoiceBridge/
 ├── Cargo.toml                  # Configuration Cargo et dépendances (gpui-kit, whisper-rs, axum, cpal, tokio)
 ├── Cargo.lock                  # Verrouillage reproductible des versions de dépendances
 ├── config.json                 # Configuration active de l'application (sauvegarde automatique)
@@ -156,10 +156,10 @@ http://localhost:3000/obs?mode=dual&theme=glow&size=34&fade=6
 cargo run --release
 
 # Lancement direct du binaire compilé :
-./target/release/SpeechToTextToTranslate
+./target/release/VoiceBridge
 
 # Mode headless / serveur uniquement (sans interface graphique de bureau) :
-./target/release/SpeechToTextToTranslate --headless
+./target/release/VoiceBridge --headless
 ```
 
 ---
