@@ -180,9 +180,8 @@ async fn switch_model_handler(
 
     if model.is_local_gpu {
         let model_path = model.default_model_name.clone();
-        let path = std::path::Path::new(&model_path);
 
-        if path.exists() {
+        if is_model_installed(&model) {
             // Already installed: hot reload directly on Metal GPU
             let mut engine = state.whisper_engine.lock().await;
             match engine.reload_model(&model_path) {
@@ -191,6 +190,9 @@ async fn switch_model_handler(
                     cfg.stt.engine_type = "whisper_local".to_string();
                     cfg.stt.model_id = payload.model_id.clone();
                     cfg.stt.model_path = model_path;
+                    if let Some(ref url) = model.download_url {
+                        cfg.stt.model_url = url.clone();
+                    }
                     cfg.stt.model_name = model.name.clone();
                     let _ = cfg.save_to_file("config.json");
 
@@ -241,6 +243,7 @@ async fn switch_model_handler(
         let model_id = payload.model_id.clone();
         let model_name = model.name.clone();
         let path_clone = model_path.clone();
+        let url_clone = download_url.clone();
 
         tokio::spawn(async move {
             tracing::info!("Starting background download of {}...", model_name);
@@ -259,6 +262,7 @@ async fn switch_model_handler(
                     cfg.stt.engine_type = "whisper_local".to_string();
                     cfg.stt.model_id = model_id;
                     cfg.stt.model_path = path_clone;
+                    cfg.stt.model_url = url_clone;
                     cfg.stt.model_name = model_name.clone();
                     let _ = cfg.save_to_file("config.json");
                     tracing::info!("Model {} is now active on Metal GPU.", model_name);

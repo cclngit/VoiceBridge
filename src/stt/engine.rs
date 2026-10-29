@@ -3,6 +3,7 @@ use reqwest::multipart::{Form, Part};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::{Arc, Once, Weak};
 use std::time::{Duration, Instant};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
@@ -17,17 +18,75 @@ pub struct TranscriptionResult {
     pub model_name: String,
 }
 
-pub struct WhisperEngine {
+struct WhisperInner {
+    // Field order matters: `state` must drop before `_ctx` so Metal buffers & residency sets
+    // owned by the state and context are released in strict reverse-creation order.
     state: WhisperState,
     #[allow(dead_code)]
     _ctx: WhisperContext,
+}
+
+pub struct WhisperEngine {
+    inner: Option<WhisperInner>,
+    shutting_down: bool,
     language: String,
     n_threads: i32,
-    #[allow(dead_code)]
     model_name: String,
 }
 
 unsafe impl Send for WhisperEngine {}
+
+static ATEXIT_ONCE: Once = Once::new();
+static ATEXIT_WHISPER: std::sync::Mutex<Option<Weak<tokio::sync::Mutex<WhisperEngine>>>> =
+    std::sync::Mutex::new(None);
+
+unsafe extern "C" {
+    fn atexit(cb: extern "C" fn()) -> i32;
+}
+
+extern "C" fn whisper_atexit_cleanup() {
+    let weak_opt = ATEXIT_WHISPER.lock().ok().and_then(|mut g| g.take());
+    if let Some(weak) = weak_opt {
+        if let Some(engine_arc) = weak.upgrade() {
+            for _ in 0..400 {
+                if let Ok(mut engine) = engine_arc.try_lock() {
+                    engine.shutdown();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+/// Registers a LIFO `atexit` safety net *after* `WhisperEngine::new` has initialized
+/// `ggml_metal_device`, ensuring all Metal residency sets are freed before C++ static
+/// destructors (`~unique_ptr<ggml_metal_device>` -> `ggml_metal_rsets_free`) run on `exit()`.
+pub fn register_atexit_whisper_cleanup(engine: &Arc<tokio::sync::Mutex<WhisperEngine>>) {
+    if let Ok(mut slot) = ATEXIT_WHISPER.lock() {
+        *slot = Some(Arc::downgrade(engine));
+    }
+    ATEXIT_ONCE.call_once(|| unsafe {
+        let _ = atexit(whisper_atexit_cleanup);
+    });
+}
+
+fn format_whisper_display_name(path_str: &str, gpu_active: bool) -> String {
+    if let Some(meta) = crate::stt::find_model_by_path(path_str) {
+        if gpu_active {
+            meta.name
+        } else {
+            meta.name.replace("(Metal GPU)", "(CPU)")
+        }
+    } else {
+        let stem = Path::new(path_str)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Whisper");
+        let backend = if gpu_active { "Metal GPU" } else { "CPU" };
+        format!("{} ({})", stem, backend)
+    }
+}
 
 impl WhisperEngine {
     pub fn new<P: AsRef<Path>>(
@@ -49,15 +108,16 @@ impl WhisperEngine {
             path_str,
             use_gpu
         );
-        let ctx = match WhisperContext::new_with_params(path_str, ctx_params) {
-            Ok(c) => c,
+        let (ctx, gpu_active) = match WhisperContext::new_with_params(path_str, ctx_params) {
+            Ok(c) => (c, use_gpu),
             Err(e) => {
                 if use_gpu {
                     tracing::warn!("GPU initialization failed ({:?}), falling back to CPU mode...", e);
                     let mut cpu_params = WhisperContextParameters::default();
                     cpu_params.use_gpu(false);
-                    WhisperContext::new_with_params(path_str, cpu_params)
-                        .map_err(|e2| format!("Failed to create Whisper context on CPU: {:?}", e2))?
+                    let c = WhisperContext::new_with_params(path_str, cpu_params)
+                        .map_err(|e2| format!("Failed to create Whisper context on CPU: {:?}", e2))?;
+                    (c, false)
                 } else {
                     return Err(format!("Failed to create Whisper context: {:?}", e).into());
                 }
@@ -68,18 +128,26 @@ impl WhisperEngine {
             .create_state()
             .map_err(|e| format!("Failed to create Whisper state: {:?}", e))?;
 
-        tracing::info!("Whisper model initialized successfully.");
+        let display_name = format_whisper_display_name(path_str, gpu_active);
+        tracing::info!("Whisper model '{}' initialized successfully.", display_name);
 
         Ok(Self {
-            _ctx: ctx,
-            state,
+            inner: Some(WhisperInner { state, _ctx: ctx }),
+            shutting_down: false,
             language: language.to_string(),
             n_threads: n_threads.max(1) as i32,
-            model_name: path_str.to_string(),
+            model_name: display_name,
         })
     }
 
-    #[allow(dead_code)]
+    /// Explicitly deallocate Whisper state and Metal GPU residency sets before process exit.
+    pub fn shutdown(&mut self) {
+        self.shutting_down = true;
+        if self.inner.take().is_some() {
+            tracing::info!("Whisper Metal GPU resources released cleanly.");
+        }
+    }
+
     pub fn set_language(&mut self, language: &str) {
         self.language = language.to_string();
     }
@@ -96,6 +164,10 @@ impl WhisperEngine {
         model_path: P,
         use_gpu: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.shutting_down {
+            return Err("WhisperEngine is shutting down".into());
+        }
+
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(use_gpu);
 
@@ -105,15 +177,20 @@ impl WhisperEngine {
             .ok_or_else(|| "Invalid model path")?;
 
         tracing::info!("Dynamically reloading Whisper model from '{}' (GPU: {})...", path_str, use_gpu);
-        let ctx = match WhisperContext::new_with_params(path_str, ctx_params) {
-            Ok(c) => c,
+
+        // Release previous Metal context & residency sets before allocating the new model
+        self.inner = None;
+
+        let (ctx, gpu_active) = match WhisperContext::new_with_params(path_str, ctx_params) {
+            Ok(c) => (c, use_gpu),
             Err(e) => {
                 if use_gpu {
                     tracing::warn!("GPU reload failed ({:?}), falling back to CPU mode...", e);
                     let mut cpu_params = WhisperContextParameters::default();
                     cpu_params.use_gpu(false);
-                    WhisperContext::new_with_params(path_str, cpu_params)
-                        .map_err(|e2| format!("Failed to reload Whisper context on CPU: {:?}", e2))?
+                    let c = WhisperContext::new_with_params(path_str, cpu_params)
+                        .map_err(|e2| format!("Failed to reload Whisper context on CPU: {:?}", e2))?;
+                    (c, false)
                 } else {
                     return Err(format!("Failed to reload Whisper context: {:?}", e).into());
                 }
@@ -124,10 +201,9 @@ impl WhisperEngine {
             .create_state()
             .map_err(|e| format!("Failed to create Whisper state: {:?}", e))?;
 
-        self._ctx = ctx;
-        self.state = state;
-        self.model_name = path_str.to_string();
-        tracing::info!("Model '{}' reloaded successfully.", path_str);
+        self.inner = Some(WhisperInner { state, _ctx: ctx });
+        self.model_name = format_whisper_display_name(path_str, gpu_active);
+        tracing::info!("Model '{}' reloaded successfully.", self.model_name);
         Ok(())
     }
 
@@ -138,6 +214,14 @@ impl WhisperEngine {
         language_override: Option<&str>,
         translate_to_en: bool,
     ) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
+        if self.shutting_down {
+            return Err("WhisperEngine is shutting down".into());
+        }
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or("WhisperEngine has no loaded model")?;
+
         let start_time = Instant::now();
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -167,12 +251,13 @@ impl WhisperEngine {
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
 
-        self.state
+        inner
+            .state
             .full(params, samples)
             .map_err(|e| format!("Whisper inference error: {:?}", e))?;
 
         let mut combined_text = String::new();
-        for segment in self.state.as_iter() {
+        for segment in inner.state.as_iter() {
             let seg_text = segment.to_string();
             combined_text.push_str(&seg_text);
         }
@@ -184,7 +269,7 @@ impl WhisperEngine {
         let final_lang = if !is_auto {
             lang_to_use.to_string()
         } else {
-            let detected_id = self.state.full_lang_id_from_state();
+            let detected_id = inner.state.full_lang_id_from_state();
             whisper_rs::get_lang_str(detected_id)
                 .unwrap_or("auto")
                 .to_string()
@@ -195,7 +280,7 @@ impl WhisperEngine {
             speaker,
             language: final_lang,
             duration_ms,
-            model_name: "Whisper (Metal GPU)".to_string(),
+            model_name: self.model_name.clone(),
         })
     }
 }

@@ -74,6 +74,7 @@ pub struct AppState {
     pub history: Arc<RwLock<VecDeque<PipelineEvent>>>,
     pub rms_rx: watch::Receiver<f32>,
     pub is_recording: Arc<AtomicBool>,
+    pub is_shutting_down: Arc<AtomicBool>,
     pub audio_device: String,
     pub config: Arc<RwLock<AppConfig>>,
     pub whisper_engine: Arc<Mutex<WhisperEngine>>,
@@ -97,11 +98,26 @@ impl AppState {
             history: Arc::new(RwLock::new(VecDeque::with_capacity(100))),
             rms_rx,
             is_recording,
+            is_shutting_down: Arc::new(AtomicBool::new(false)),
             audio_device,
             config: Arc::new(RwLock::new(config)),
             whisper_engine,
             download_status,
             translation_service,
+        }
+    }
+
+    /// Synchronously stops audio ingestion, waits for any in-flight Metal inference to finish,
+    /// and deallocates Whisper Metal GPU residency sets before AppKit / C `exit()` runs.
+    pub fn shutdown_sync(&self) {
+        self.is_shutting_down.store(true, Ordering::SeqCst);
+        self.is_recording.store(false, Ordering::SeqCst);
+        for _ in 0..400 {
+            if let Ok(mut engine) = self.whisper_engine.try_lock() {
+                engine.shutdown();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

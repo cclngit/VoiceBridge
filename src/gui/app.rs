@@ -186,6 +186,18 @@ impl VoiceBridgeApp {
             }
         }
 
+        // Auto-start local Python ASR server if saved configuration uses a local catalog server model
+        if initial_cfg.stt.engine_type != "whisper_local"
+            && initial_cfg.stt.api_url.contains("127.0.0.1:8000")
+            && initial_cfg.stt.model_id != "custom_api"
+        {
+            if let Some(meta) = crate::stt::find_model(&initial_cfg.stt.model_id) {
+                if !meta.is_local_gpu {
+                    app.start_local_asr_server(&meta.default_model_name, cx);
+                }
+            }
+        }
+
         // Start background high-frequency polling loop for volume & events
         let state_clone = app.state.clone();
         cx.spawn(async move |this, cx| {
@@ -329,12 +341,15 @@ impl VoiceBridgeApp {
         {
             let mut guard = self.local_asr_child.lock().unwrap();
             if let Some(mut old_child) = guard.take() {
-                let _ = old_child.kill();
-                let _ = old_child.wait();
+                terminate_asr_child(&mut old_child);
             }
         }
 
         match std::process::Command::new("python3")
+            .env(
+                "PYTHONWARNINGS",
+                "ignore::UserWarning:multiprocessing.resource_tracker",
+            )
             .arg("scripts/asr_server.py")
             .arg(model_name)
             .spawn()
@@ -357,8 +372,7 @@ impl VoiceBridgeApp {
     fn stop_local_asr_server(&mut self, cx: &mut Context<Self>) {
         let mut guard = self.local_asr_child.lock().unwrap();
         if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_asr_child(&mut child);
             tracing::info!("Serveur ASR local arrêté proprement.");
         }
         self.local_server_status = "Arrêté (Économie CPU/RAM)".to_string();
@@ -373,6 +387,7 @@ impl VoiceBridgeApp {
         let model_path = meta.default_model_name.clone();
         let model_id = meta.id.clone();
         let display_name = meta.name.clone();
+        let download_url = meta.download_url.clone();
 
         if !is_model_installed(&meta) {
             window.push_notification(
@@ -384,9 +399,9 @@ impl VoiceBridgeApp {
         }
 
         let state = self.state.clone();
-        let (n_threads, use_gpu, lang) = {
+        let (use_gpu, lang) = {
             let cfg = state.config.blocking_read();
-            (cfg.stt.n_threads, cfg.stt.use_gpu, cfg.stt.language.clone())
+            (cfg.stt.use_gpu, cfg.stt.language.clone())
         };
 
         window.push_notification(
@@ -395,13 +410,20 @@ impl VoiceBridgeApp {
         );
 
         self.tokio_handle.spawn(async move {
-            match crate::stt::WhisperEngine::new(&model_path, &lang, n_threads, use_gpu) {
-                Ok(new_engine) => {
-                    *state.whisper_engine.lock().await = new_engine;
+            let reload_res = {
+                let mut engine = state.whisper_engine.lock().await;
+                engine.set_language(&lang);
+                engine.reload_model_with_gpu(&model_path, use_gpu)
+            };
+            match reload_res {
+                Ok(()) => {
                     let mut cfg = state.config.write().await;
                     cfg.stt.engine_type = "whisper_local".to_string();
                     cfg.stt.model_id = model_id;
                     cfg.stt.model_path = model_path;
+                    if let Some(url) = download_url {
+                        cfg.stt.model_url = url;
+                    }
                     cfg.stt.model_name = display_name;
                     let _ = cfg.save_default();
                     tracing::info!("Modèle Whisper local activé avec succès.");
@@ -502,26 +524,32 @@ impl VoiceBridgeApp {
             cx,
         );
 
-        let (n_threads, use_gpu, lang) = {
+        let (use_gpu, lang) = {
             let cfg = state.config.blocking_read();
-            (cfg.stt.n_threads, cfg.stt.use_gpu, cfg.stt.language.clone())
+            (cfg.stt.use_gpu, cfg.stt.language.clone())
         };
 
         let state_clone = state.clone();
         let path_clone = model_path.clone();
         let id_clone = model_id.clone();
         let name_clone = display_name.clone();
+        let url_clone = download_url.clone();
 
         self.tokio_handle.spawn(async move {
             match download_model_with_progress(&model_path, &download_url, &model_id, status).await {
                 Ok(_) => {
                     tracing::info!("Modèle téléchargé avec succès : {}", path_clone);
-                    if let Ok(new_engine) = crate::stt::WhisperEngine::new(&path_clone, &lang, n_threads, use_gpu) {
-                        *state_clone.whisper_engine.lock().await = new_engine;
+                    let reload_res = {
+                        let mut engine = state_clone.whisper_engine.lock().await;
+                        engine.set_language(&lang);
+                        engine.reload_model_with_gpu(&path_clone, use_gpu)
+                    };
+                    if reload_res.is_ok() {
                         let mut cfg = state_clone.config.write().await;
                         cfg.stt.engine_type = "whisper_local".to_string();
                         cfg.stt.model_id = id_clone;
                         cfg.stt.model_path = path_clone;
+                        cfg.stt.model_url = url_clone;
                         cfg.stt.model_name = name_clone;
                         let _ = cfg.save_default();
                         tracing::info!("Modèle Whisper chargé et actif en mémoire.");
@@ -2399,15 +2427,44 @@ impl Render for VoiceBridgeApp {
     }
 }
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Gracefully stops the local Python ASR server with SIGTERM so Uvicorn and Python's
+/// `multiprocessing.resource_tracker` release semaphores cleanly before falling back to SIGKILL.
+fn terminate_asr_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        const SIGTERM: i32 = 15;
+        let _ = kill(child.id() as i32, SIGTERM);
+    }
+    for _ in 0..30 {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for VoiceBridgeApp {
     fn drop(&mut self) {
+        self.state.is_shutting_down.store(true, Ordering::SeqCst);
+        self.state.is_recording.store(false, Ordering::SeqCst);
+
         if let Ok(mut guard) = self.local_asr_child.lock() {
             if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_asr_child(&mut child);
                 tracing::info!("Serveur ASR local arrêté lors de la fermeture de VoiceBridge.");
             }
         }
+
+        // Explicitly release Metal GPU residency sets before AppKit's `-[NSApplication terminate:]`
+        // calls C `exit()`, avoiding `GGML_ASSERT([rsets->data count] == 0)` in `ggml_metal_rsets_free`.
+        self.state.shutdown_sync();
     }
 }
 
@@ -2447,6 +2504,22 @@ pub fn run_gui(
     app.run(move |cx| {
         gpui_kit::init(cx);
         gpui_kit::component::theme::Theme::change(gpui_kit::component::theme::ThemeMode::Dark, None, cx);
+
+        let state_for_quit = state.clone();
+        cx.on_app_quit(move |_| {
+            let st = state_for_quit.clone();
+            async move {
+                st.shutdown_sync();
+            }
+        })
+        .detach();
+
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
 
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1120.), px(780.)), cx)),

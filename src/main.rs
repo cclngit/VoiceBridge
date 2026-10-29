@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use stt::{ensure_model_exists, RemoteAsrClient, WhisperEngine};
+use stt::{ensure_model_exists, resolve_model_download_url, RemoteAsrClient, WhisperEngine};
 use tokio::sync::{broadcast, mpsc, watch};
 use translate::TranslationService;
 use vad::SpeechSegmenter;
@@ -75,10 +75,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build()?;
 
     // 2. Initialize Models, Audio Capture & Server inside Tokio Runtime
-    let (app_state, audio_capture) = rt.block_on(async {
-        if config.stt.engine_type == "whisper_local" {
-            let _ = ensure_model_exists(&config.stt.model_path, &config.stt.model_url).await;
+    let (app_state, audio_capture, bound_port) = rt.block_on(async {
+        let resolved_url = resolve_model_download_url(
+            &config.stt.model_id,
+            &config.stt.model_path,
+            &config.stt.model_url,
+        );
+        if config.stt.model_url != resolved_url {
+            config.stt.model_url = resolved_url.clone();
         }
+        ensure_model_exists(&config.stt.model_path, &resolved_url).await?;
 
         let whisper_engine = Arc::new(tokio::sync::Mutex::new(WhisperEngine::new(
             &config.stt.model_path,
@@ -86,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.stt.n_threads,
             config.stt.use_gpu,
         )?));
+        stt::register_atexit_whisper_cleanup(&whisper_engine);
         let remote_asr_client = Arc::new(RemoteAsrClient::new());
         let download_status = Arc::new(tokio::sync::RwLock::new(stt::DownloadStatus::default()));
 
@@ -119,6 +126,49 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(rms_tx),
         )?;
 
+        // Pre-bind web server port (with automatic fallback if desired port is occupied)
+        let host_ip: std::net::IpAddr = config
+            .server
+            .host
+            .parse()
+            .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        let desired_port = config.server.port;
+        let mut bound_listener = None;
+        for offset in 0..=10u16 {
+            let candidate_port = match desired_port.checked_add(offset) {
+                Some(p) => p,
+                None => break,
+            };
+            let candidate_addr = SocketAddr::new(host_ip, candidate_port);
+            match tokio::net::TcpListener::bind(&candidate_addr).await {
+                Ok(listener) => {
+                    if offset > 0 {
+                        tracing::warn!(
+                            "Port {} was already in use; bound web server to fallback port {}.",
+                            desired_port,
+                            candidate_port
+                        );
+                        config.server.port = candidate_port;
+                    }
+                    bound_listener = Some((listener, candidate_addr));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && offset < 10 => {
+                    if offset == 0 {
+                        tracing::warn!(
+                            "Web server port {} is already in use ({}). Searching for next available port...",
+                            candidate_addr,
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bind web server port {}: {}", candidate_addr, e);
+                    break;
+                }
+            }
+        }
+
         let app_state = AppState::new(
             event_tx.clone(),
             rms_rx,
@@ -151,6 +201,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let mut last_config_check = std::time::Instant::now();
             while let Some(chunk) = audio_rx.recv().await {
+                if pipeline_state
+                    .is_shutting_down
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    break;
+                }
                 if !is_rec_clone.load(std::sync::atomic::Ordering::Relaxed) {
                     continue;
                 }
@@ -176,6 +232,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let state = pipeline_state.clone();
 
                     tokio::spawn(async move {
+                        if state
+                            .is_shutting_down
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            return;
+                        }
                         let cfg = state.config.read().await.clone();
                         let target_lang = cfg.translation.target_lang.clone();
                         let effective_source_lang = if cfg.stt.language != "auto" && !cfg.stt.language.is_empty() {
@@ -191,6 +253,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             match remote_asr.transcribe(&speech_segment, &cfg.stt).await {
                                 Ok(res) => Ok(res),
                                 Err(err) => {
+                                    if state
+                                        .is_shutting_down
+                                        .load(std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        return;
+                                    }
                                     tracing::warn!(
                                         "Serveur distant ASR injoignable ({}), bascule automatique sur Whisper local GPU/CPU.",
                                         err
@@ -266,37 +334,32 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
 
         // 3. Start Background Web Server for OBS Studio Browser Source
-        let router = create_router(app_state.clone());
-        let addr = SocketAddr::from(([127, 0, 0, 1], config.server.port));
+        let actual_port = config.server.port;
+        if let Some((listener, actual_addr)) = bound_listener {
+            let router = create_router(app_state.clone());
+            tracing::info!("VoiceBridge Web Interface available at: http://{}", actual_addr);
+            tracing::info!("OBS Studio Subtitle Overlay available at: http://{}/obs", actual_addr);
 
-        tracing::info!("VoiceBridge Web Interface available at: http://{}", addr);
-        tracing::info!("OBS Studio Subtitle Overlay available at: http://{}/obs", addr);
-
-        tokio::spawn(async move {
-            match tokio::net::TcpListener::bind(&addr).await {
-                Ok(listener) => {
-                    if let Err(e) = axum::serve(listener, router).await {
-                        tracing::error!("Web server error: {}", e);
-                    }
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!("Web server error: {}", e);
                 }
-                Err(e) => {
-                    tracing::error!("Failed to bind web server port {}: {}", addr, e);
-                }
-            }
-        });
+            });
+        }
 
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((app_state, audio_capture))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((app_state, audio_capture, actual_port))
     })?;
 
     // 4. Run GUI or Headless Event Loop
     if args.headless {
-        println!("🚀 Mode headless actif : Interface Web et OBS opérationnelles sur http://127.0.0.1:{}", config.server.port);
+        println!("🚀 Mode headless actif : Interface Web et OBS opérationnelles sur http://127.0.0.1:{}", bound_port);
         println!("Appuyez sur Ctrl+C pour quitter.");
         rt.block_on(async {
             let _ = tokio::signal::ctrl_c().await;
             println!("\nArrêt du pipeline...");
         });
         audio_capture.set_active(false);
+        app_state.shutdown_sync();
     } else {
         println!("✨ Lancement de l'interface graphique native VoiceBridge (GPUI 120 FPS)...");
         let handle = rt.handle().clone();
@@ -305,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let res = gui::run_gui(app_state_gui, handle);
 
         audio_capture.set_active(false);
+        app_state.shutdown_sync();
 
         if let Err(e) = res {
             tracing::error!("Erreur interface graphique GPUI: {:?}", e);

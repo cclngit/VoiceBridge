@@ -111,10 +111,10 @@ fn default_engine_type() -> String {
     "whisper_local".to_string()
 }
 fn default_model_id() -> String {
-    "whisper_local".to_string()
+    "whisper_tiny".to_string()
 }
 fn default_model_name() -> String {
-    "whisper-tiny".to_string()
+    "Whisper Tiny (Metal GPU)".to_string()
 }
 fn default_api_url() -> String {
     "http://127.0.0.1:8000/v1/audio/transcriptions".to_string()

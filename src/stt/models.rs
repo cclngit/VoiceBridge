@@ -299,10 +299,55 @@ pub fn find_model(model_id: &str) -> Option<ModelMetadata> {
     get_available_models().into_iter().find(|m| m.id == model_id)
 }
 
+pub fn find_model_by_path(model_path: &str) -> Option<ModelMetadata> {
+    let target_name = std::path::Path::new(model_path).file_name();
+    get_available_models().into_iter().find(|m| {
+        m.is_local_gpu
+            && (m.default_model_name == model_path
+                || (target_name.is_some()
+                    && std::path::Path::new(&m.default_model_name).file_name() == target_name))
+    })
+}
+
+pub fn resolve_model_download_url(
+    model_id: &str,
+    model_path: &str,
+    configured_url: &str,
+) -> String {
+    if let Some(url) = find_model_by_path(model_path).and_then(|m| m.download_url) {
+        return url;
+    }
+    if let Some(m) = find_model(model_id) {
+        if m.default_model_name == model_path {
+            if let Some(url) = m.download_url {
+                return url;
+            }
+        }
+    }
+    configured_url.to_string()
+}
+
+pub fn is_model_file_valid(path: &std::path::Path, expected_size_mb: u32) -> bool {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => m,
+        _ => return false,
+    };
+    if expected_size_mb > 0 {
+        // Require at least 70% of catalog size to catch truncated downloads or wrong GGML files
+        let min_bytes = (expected_size_mb as u64) * 1024 * 1024 * 7 / 10;
+        meta.len() >= min_bytes
+    } else {
+        meta.len() > 1024 * 1024
+    }
+}
+
 pub fn is_model_installed(model: &ModelMetadata) -> bool {
     if !model.is_local_gpu {
         return false;
     }
-    std::path::Path::new(&model.default_model_name).exists()
+    is_model_file_valid(
+        std::path::Path::new(&model.default_model_name),
+        model.file_size_mb,
+    )
 }
 

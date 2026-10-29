@@ -1,3 +1,4 @@
+use crate::stt::models::{find_model, find_model_by_path, is_model_file_valid};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -39,8 +40,26 @@ pub async fn ensure_model_exists(
     fallback_url: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = Path::new(model_path);
+    let catalog_meta = find_model_by_path(model_path);
+    let expected_mb = catalog_meta.as_ref().map(|m| m.file_size_mb).unwrap_or(0);
+    let effective_url = catalog_meta
+        .and_then(|m| m.download_url)
+        .unwrap_or_else(|| fallback_url.to_string());
+
     if path.exists() {
-        return Ok(());
+        if is_model_file_valid(path, expected_mb) {
+            return Ok(());
+        }
+        let actual_mb = fs::metadata(path)
+            .map(|m| m.len() / (1024 * 1024))
+            .unwrap_or(0);
+        tracing::warn!(
+            "Existing model file '{}' has invalid size ({} MB, expected ~{} MB). Removing and re-downloading authentic model...",
+            model_path,
+            actual_mb,
+            expected_mb
+        );
+        let _ = fs::remove_file(path);
     }
 
     if let Some(parent) = path.parent() {
@@ -50,31 +69,70 @@ pub async fn ensure_model_exists(
     tracing::info!(
         "Whisper model not found at '{}'. Automatically downloading from '{}'...",
         model_path,
-        fallback_url
+        effective_url
     );
 
     let client = reqwest::Client::builder()
         .user_agent("VoiceBridge/1.0 (Mozilla/5.0 Apple-Silicon)")
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()?;
-    let response = client.get(fallback_url).send().await?;
+    let response = client.get(&effective_url).send().await?;
 
     if !response.status().is_success() {
         return Err(format!(
-            "Failed to download model: HTTP status {}",
+            "Failed to download model from '{}': HTTP status {}",
+            effective_url,
             response.status()
         )
         .into());
     }
 
-    let bytes = response.bytes().await?;
-    let mut file = File::create(path)?;
-    file.write_all(&bytes)?;
+    let total_size = response.content_length().unwrap_or(0);
+    let temp_path = format!("{}.part", model_path);
+    let mut file = File::create(&temp_path)?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    let start_time = Instant::now();
+    let mut last_log = Instant::now();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result?;
+        file.write_all(&chunk)?;
+        downloaded += chunk.len() as u64;
+
+        if last_log.elapsed().as_secs() >= 2 {
+            let elapsed_sec = start_time.elapsed().as_secs_f32().max(0.001);
+            let speed_mb_s = (downloaded as f32 / (1024.0 * 1024.0)) / elapsed_sec;
+            if total_size > 0 {
+                let pct = (downloaded as f32 / total_size as f32) * 100.0;
+                tracing::info!(
+                    "Downloading '{}': {:.1}% ({} MB / {} MB @ {:.1} MB/s)",
+                    model_path,
+                    pct,
+                    downloaded / (1024 * 1024),
+                    total_size / (1024 * 1024),
+                    speed_mb_s
+                );
+            } else {
+                tracing::info!(
+                    "Downloading '{}': {} MB (@ {:.1} MB/s)",
+                    model_path,
+                    downloaded / (1024 * 1024),
+                    speed_mb_s
+                );
+            }
+            last_log = Instant::now();
+        }
+    }
+
+    file.flush()?;
+    drop(file);
+    fs::rename(&temp_path, path)?;
 
     tracing::info!(
         "Successfully downloaded model to '{}' ({} MB)",
         model_path,
-        bytes.len() / (1024 * 1024)
+        downloaded / (1024 * 1024)
     );
 
     Ok(())
@@ -88,13 +146,21 @@ pub async fn download_model_with_progress(
     status_tracker: Arc<RwLock<DownloadStatus>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = Path::new(model_path);
+    let expected_mb = find_model(model_id)
+        .or_else(|| find_model_by_path(model_path))
+        .map(|m| m.file_size_mb)
+        .unwrap_or(0);
+
     if path.exists() {
-        let mut st = status_tracker.write().await;
-        st.is_downloading = false;
-        st.percent = 100.0;
-        st.status_message = "Modèle déjà téléchargé et prêt.".to_string();
-        st.error = None;
-        return Ok(());
+        if is_model_file_valid(path, expected_mb) {
+            let mut st = status_tracker.write().await;
+            st.is_downloading = false;
+            st.percent = 100.0;
+            st.status_message = "Modèle déjà téléchargé et prêt.".to_string();
+            st.error = None;
+            return Ok(());
+        }
+        let _ = fs::remove_file(path);
     }
 
     if let Some(parent) = path.parent() {
