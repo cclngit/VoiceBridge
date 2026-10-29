@@ -1,7 +1,4 @@
 {
-    "python.languageServer": "Pylance",
-    "python.analysis.diagnosticSeverityOverrides": {
-        "reportMissingModuleSource": "none",
-        "reportShadowedImports": "none"
-    }
+    "rust-analyzer.check.command": "check",
+    "rust-analyzer.cargo.features": "all"
 }

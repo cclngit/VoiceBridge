@@ -1,0 +1,2014 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="VoiceBridge Pro — Interface haute performance de reconnaissance vocale et traduction instantanée multi-modèles (Whisper Metal GPU, Qwen3-ASR, Voxtral, Canary, VibeVoice) avec intégration OBS Studio.">
+    <title>VoiceBridge Pro — Speech & Neural Translation Studio</title>
+
+    <!-- Google Fonts: Syne (Awwwards Display), Plus Jakarta Sans, JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-void: #030508;
+            --bg-glass: rgba(12, 16, 28, 0.65);
+            --bg-glass-card: rgba(18, 24, 42, 0.55);
+            --bg-glass-hover: rgba(26, 36, 64, 0.7);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-highlight: rgba(255, 255, 255, 0.16);
+            --border-glow: rgba(99, 102, 241, 0.4);
+
+            --accent-primary: #6366f1;
+            --accent-cyan: #06b6d4;
+            --accent-pink: #ec4899;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+
+            --text-heading: #ffffff;
+            --text-body: #e2e8f0;
+            --text-muted: #8492a6;
+            --text-subtle: #4b5563;
+
+            --font-display: 'Syne', system-ui, -apple-system, sans-serif;
+            --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+
+            --radius-lg: 24px;
+            --radius-md: 16px;
+            --radius-sm: 10px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            background-color: var(--bg-void);
+            color: var(--text-body);
+            font-family: var(--font-sans);
+            min-height: 100vh;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        /* Ambient Glowing Iridescent Lighting Mesh */
+        .ambient-mesh {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            z-index: 0;
+            overflow: hidden;
+        }
+
+        .orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(140px);
+            opacity: 0.18;
+            will-change: transform;
+            animation: orbFloat 24s ease-in-out infinite alternate;
+        }
+
+        .orb-1 {
+            width: 700px;
+            height: 700px;
+            background: radial-gradient(circle, #6366f1 0%, transparent 70%);
+            top: -200px;
+            left: -150px;
+        }
+
+        .orb-2 {
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, #06b6d4 0%, transparent 70%);
+            top: 40%;
+            right: -200px;
+            animation-duration: 32s;
+            animation-delay: -8s;
+        }
+
+        .orb-3 {
+            width: 550px;
+            height: 550px;
+            background: radial-gradient(circle, #ec4899 0%, transparent 70%);
+            bottom: -200px;
+            left: 20%;
+            animation-duration: 28s;
+            animation-delay: -14s;
+        }
+
+        @keyframes orbFloat {
+            0% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(80px, 60px) scale(1.08); }
+            100% { transform: translate(-60px, 100px) scale(0.94); }
+        }
+
+        /* Subtle Noise Grain Overlay */
+        .noise-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+            opacity: 0.035;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        }
+
+        /* Navigation Header */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 36px;
+            background: rgba(3, 5, 8, 0.75);
+            backdrop-filter: blur(28px) saturate(180%);
+            -webkit-backdrop-filter: blur(28px) saturate(180%);
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        .brand-group {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .brand-gem {
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 28px rgba(79, 70, 229, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+            position: relative;
+        }
+
+        .brand-gem svg {
+            width: 22px;
+            height: 22px;
+            fill: #ffffff;
+        }
+
+        .brand-info h1 {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.25rem;
+            letter-spacing: -0.03em;
+            background: linear-gradient(120deg, #ffffff 30%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-info p {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .pill-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            font-family: var(--font-mono);
+            letter-spacing: 0.02em;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-glass);
+            color: #cbd5e1;
+        }
+
+        .pill-live {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.35);
+            color: #34d399;
+        }
+
+        .radar-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: currentColor;
+            box-shadow: 0 0 8px currentColor;
+            animation: radarPulse 1.8s infinite ease-in-out;
+        }
+
+        @keyframes radarPulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(0.7); opacity: 0.4; }
+        }
+
+        .nav-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn-luxury {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-glass);
+            color: #f1f5f9;
+            padding: 9px 18px;
+            border-radius: 12px;
+            font-family: var(--font-sans);
+            font-weight: 600;
+            font-size: 0.84rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+            overflow: hidden;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-luxury:hover {
+            background: rgba(255, 255, 255, 0.09);
+            border-color: rgba(255, 255, 255, 0.22);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+        }
+
+        .btn-obs-action {
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.16), rgba(99, 102, 241, 0.16));
+            border-color: rgba(6, 182, 212, 0.38);
+            color: #38bdf8;
+        }
+
+        .btn-obs-action:hover {
+            border-color: rgba(6, 182, 212, 0.7);
+            box-shadow: 0 0 20px rgba(6, 182, 212, 0.35);
+        }
+
+        .btn-mic-toggle {
+            background: linear-gradient(135deg, #10b981, #059669);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #ffffff;
+            font-weight: 700;
+            box-shadow: 0 4px 18px rgba(16, 185, 129, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+        }
+
+        .btn-mic-toggle.muted {
+            background: linear-gradient(135deg, #ef4444, #b91c1c);
+            box-shadow: 0 4px 18px rgba(239, 68, 68, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+        }
+
+        /* Main Studio Layout */
+        main {
+            position: relative;
+            z-index: 10;
+            flex: 1;
+            max-width: 1480px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 32px 36px 60px;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
+
+        /* Hero Wave Deck */
+        .hero-audio-deck {
+            background: var(--bg-glass);
+            backdrop-filter: blur(28px);
+            -webkit-backdrop-filter: blur(28px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            padding: 24px 32px;
+            box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .deck-top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .deck-headline {
+            display: flex;
+            align-items: baseline;
+            gap: 14px;
+        }
+
+        .deck-headline h2 {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: -0.03em;
+            color: #ffffff;
+        }
+
+        .deck-headline span {
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .wave-canvas-wrapper {
+            width: 100%;
+            height: 80px;
+            border-radius: 14px;
+            background: rgba(3, 5, 8, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #soundwave-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Download Progress Banner (Awwwards Grade) */
+        .download-banner {
+            display: none;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(6, 182, 212, 0.18));
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            border-radius: var(--radius-md);
+            padding: 18px 24px;
+            box-shadow: 0 16px 36px -10px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+            animation: fadeInDown 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .download-banner.active {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .dl-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .dl-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: #ffffff;
+        }
+
+        .dl-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-top-color: #38bdf8;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .dl-stats {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            color: #a5b4fc;
+        }
+
+        .dl-progress-track {
+            width: 100%;
+            height: 10px;
+            background: rgba(0, 0, 0, 0.45);
+            border-radius: 9999px;
+            overflow: hidden;
+            position: relative;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .dl-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #6366f1, #06b6d4, #ec4899);
+            background-size: 200% 100%;
+            animation: shimmerGradient 2s linear infinite;
+            border-radius: 9999px;
+            transition: width 0.2s ease-out;
+            box-shadow: 0 0 16px rgba(6, 182, 212, 0.6);
+        }
+
+        @keyframes shimmerGradient {
+            0% { background-position: 100% 0; }
+            100% { background-position: -100% 0; }
+        }
+
+        /* Dual Translation Stage (Haute Horlogerie / Editorial Deck) */
+        .stage-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 960px) {
+            .stage-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .stage-card {
+            background: var(--bg-glass-card);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            position: relative;
+            min-height: 280px;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 20px 48px -12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+
+        .stage-card:hover {
+            border-color: var(--border-highlight);
+        }
+
+        .card-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 14px;
+        }
+
+        .lang-identity {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .lang-pill {
+            padding: 5px 12px;
+            border-radius: 8px;
+            font-family: var(--font-mono);
+            font-weight: 700;
+            font-size: 0.78rem;
+            letter-spacing: 0.04em;
+            background: rgba(255, 255, 255, 0.06);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .card-label {
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: #f1f5f9;
+        }
+
+        .card-tools {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tool-btn {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-glass);
+            color: var(--text-muted);
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: scale(1.05);
+        }
+
+        .tool-btn svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        /* Transcription & Translation Text Display */
+        .stage-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 140px;
+        }
+
+        .speech-output {
+            font-size: 1.45rem;
+            line-height: 1.5;
+            font-weight: 600;
+            color: #f8fafc;
+            letter-spacing: -0.015em;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            word-break: break-word;
+        }
+
+        .speech-output.empty {
+            color: var(--text-subtle);
+            font-weight: 400;
+            font-size: 1.1rem;
+            font-style: italic;
+        }
+
+        .translated-output {
+            font-size: 1.6rem;
+            line-height: 1.45;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 10%, #38bdf8 65%, #c084fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.02em;
+            word-break: break-word;
+        }
+
+        .translated-output.empty {
+            background: none;
+            -webkit-text-fill-color: initial;
+            color: var(--text-subtle);
+            font-weight: 400;
+            font-size: 1.1rem;
+            font-style: italic;
+        }
+
+        .stage-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-top: 14px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            font-family: var(--font-mono);
+            font-size: 0.76rem;
+            color: var(--text-muted);
+        }
+
+        .latency-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #38bdf8;
+            font-weight: 600;
+        }
+
+        .speaker-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            font-family: var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 12px;
+            color: #ffffff;
+            background: linear-gradient(135deg, #6366f1, #3b82f6);
+            box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+        }
+
+        .speaker-tag.locuteur-2 {
+            background: linear-gradient(135deg, #ec4899, #8b5cf6);
+            box-shadow: 0 2px 10px rgba(236, 72, 153, 0.35);
+        }
+
+        /* Stream Feed (Chronological Timeline) */
+        .feed-section {
+            background: var(--bg-glass);
+            backdrop-filter: blur(28px);
+            -webkit-backdrop-filter: blur(28px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            padding: 24px 32px;
+            box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .feed-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .feed-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.2rem;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .feed-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-export {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-glass);
+            color: var(--text-muted);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.76rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-export:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .feed-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: 480px;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+
+        .feed-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        .feed-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 9999px;
+        }
+
+        .feed-item {
+            display: grid;
+            grid-template-columns: 80px 1fr 1fr 90px;
+            gap: 18px;
+            align-items: center;
+            padding: 14px 20px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: var(--radius-md);
+            font-size: 0.88rem;
+            transition: all 0.2s ease;
+            animation: slideInRow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .feed-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.1);
+            transform: translateX(4px);
+        }
+
+        .item-time {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        .item-source {
+            color: #cbd5e1;
+            font-weight: 500;
+        }
+
+        .item-target {
+            color: #38bdf8;
+            font-weight: 600;
+        }
+
+        .item-latency {
+            font-family: var(--font-mono);
+            font-size: 0.76rem;
+            color: #a5b4fc;
+            text-align: right;
+        }
+
+        @keyframes slideInRow {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Modal Settings & Model Switcher */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            z-index: 200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .modal-overlay.open {
+            display: flex;
+            animation: modalFade 0.25s ease-out;
+        }
+
+        @keyframes modalFade {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-container {
+            width: 100%;
+            max-width: 900px;
+            background: #090d16;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            max-height: 90vh;
+        }
+
+        .modal-header {
+            padding: 24px 32px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-header h3 {
+            font-family: var(--font-display);
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+
+        .modal-tabs {
+            display: flex;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.2);
+            padding: 0 32px;
+            gap: 20px;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            padding: 14px 4px;
+            color: var(--text-muted);
+            font-family: var(--font-sans);
+            font-weight: 600;
+            font-size: 0.88rem;
+            cursor: pointer;
+            position: relative;
+            transition: color 0.2s ease;
+        }
+
+        .tab-btn:hover {
+            color: #ffffff;
+        }
+
+        .tab-btn.active {
+            color: #38bdf8;
+        }
+
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #38bdf8;
+            box-shadow: 0 0 12px #38bdf8;
+        }
+
+        .modal-body {
+            padding: 28px 32px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        /* Model Picker Cards */
+        .models-deck-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .model-tile {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: var(--radius-md);
+            padding: 18px;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+        }
+
+        .model-tile:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(99, 102, 241, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .model-tile.selected {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(6, 182, 212, 0.15));
+            border-color: #38bdf8;
+            box-shadow: 0 0 24px rgba(56, 189, 248, 0.25);
+        }
+
+        .tile-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .tile-name {
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: #ffffff;
+        }
+
+        .tile-badge {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            color: #38bdf8;
+        }
+
+        .tile-desc {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+
+        .tile-status {
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+        }
+
+        .tile-status-tag {
+            font-weight: 600;
+        }
+        .status-ready { color: #34d399; }
+        .status-download { color: #f59e0b; }
+        .status-remote { color: #a5b4fc; }
+
+        /* Form Controls */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #f1f5f9;
+        }
+
+        .form-input, .form-select {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #ffffff;
+            font-family: inherit;
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+
+        .form-input:focus, .form-select:focus {
+            border-color: #38bdf8;
+        }
+
+        .modal-footer {
+            padding: 18px 32px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 12px;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        /* Toast */
+        .toast-box {
+            position: fixed;
+            bottom: 32px;
+            right: 36px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            backdrop-filter: blur(16px);
+            color: #ffffff;
+            padding: 14px 22px;
+            border-radius: 12px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.8), 0 0 20px rgba(56, 189, 248, 0.25);
+            z-index: 300;
+            display: none;
+            animation: toastPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes toastPop {
+            from { transform: translateY(12px) scale(0.95); opacity: 0; }
+            to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+
+        footer {
+            padding: 20px 36px;
+            border-top: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            background: rgba(3, 5, 8, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-mesh">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+    <div class="noise-layer"></div>
+
+    <!-- Header Navigation -->
+    <header>
+        <div class="brand-group">
+            <div class="brand-gem">
+                <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            </div>
+            <div class="brand-info">
+                <h1>VoiceBridge Pro</h1>
+                <p>
+                    <span class="pill-chip pill-live"><span class="radar-dot"></span> <span id="header-status-label">EN LIGNE</span></span>
+                    <span id="header-metal-badge">Apple Silicon Metal GPU</span>
+                    <span id="header-engine-label">&bull; Whisper Tiny &bull; FR</span>
+                </p>
+            </div>
+        </div>
+
+        <div class="nav-controls">
+            <button class="btn-luxury btn-obs-action" id="btn-open-obs" title="Configurer les sous-titres pour OBS Studio">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg>
+                OBS Studio Overlay
+            </button>
+            <button class="btn-luxury" id="btn-open-settings" title="Paramètres & Sélection des Modèles">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                Modèles & Réglages
+            </button>
+            <button class="btn-luxury btn-mic-toggle" id="btn-toggle-mic">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                <span id="mic-label">Micro Actif</span>
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <!-- Hero Dynamic Soundwave Deck -->
+        <section class="hero-audio-deck">
+            <div class="deck-top-bar">
+                <div class="deck-headline">
+                    <h2>Studio de Transcription & Traduction</h2>
+                    <span id="deck-device-tag">Micro MacBook Air &bull; 48000 Hz</span>
+                </div>
+                <div class="pill-chip" id="pipeline-total-badge">
+                    Latence Totale : <strong id="metric-total" style="color: #38bdf8;">0</strong> ms
+                </div>
+            </div>
+
+            <!-- Real-time 60fps Harmonic Wave Canvas -->
+            <div class="wave-canvas-wrapper">
+                <canvas id="soundwave-canvas"></canvas>
+            </div>
+
+            <!-- Model Download Progress Banner (Prominent Real-Time Display) -->
+            <div class="download-banner" id="dl-progress-banner">
+                <div class="dl-header">
+                    <div class="dl-title">
+                        <div class="dl-spinner"></div>
+                        <span id="dl-model-name">Téléchargement du Modèle...</span>
+                    </div>
+                    <div class="dl-stats">
+                        <span id="dl-percent">0.0%</span> &bull; <span id="dl-bytes">0 / 0 Mo</span> &bull; <span id="dl-speed">0.0 Mo/s</span>
+                    </div>
+                </div>
+                <div class="dl-progress-track">
+                    <div class="dl-progress-fill" id="dl-progress-bar"></div>
+                </div>
+                <div style="font-size: 0.76rem; color: #cbd5e1;" id="dl-status-text">Initialisation...</div>
+            </div>
+        </section>
+
+        <!-- Dual Stage: Speech & Translation -->
+        <section class="stage-grid">
+            <!-- Source Speech Card -->
+            <div class="stage-card">
+                <div class="card-top">
+                    <div class="lang-identity">
+                        <span class="lang-pill" id="source-badge" style="cursor: pointer;" title="Cliquer pour changer la langue source">FR</span>
+                        <div class="card-label" id="source-card-label">Discours Verrouillé (FR)</div>
+                    </div>
+                    <div class="card-tools">
+                        <button class="tool-btn" id="btn-copy-source" title="Copier le texte original">
+                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="stage-content">
+                    <div id="source-speaker-wrap"></div>
+                    <div class="speech-output empty" id="source-live-text">Parlez dans votre microphone pour démarrer la capture vocale...</div>
+                </div>
+                <div class="stage-footer">
+                    <div>Moteur ASR : <span id="footer-model-name" style="color: #cbd5e1;">Whisper (Metal GPU)</span></div>
+                    <div class="latency-chip">STT : <span id="metric-stt">0</span> ms</div>
+                </div>
+            </div>
+
+            <!-- Target Translation Card -->
+            <div class="stage-card">
+                <div class="card-top">
+                    <div class="lang-identity">
+                        <span class="lang-pill" id="target-badge" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); cursor: pointer;" title="Cliquer pour changer la langue de traduction">EN</span>
+                        <div class="card-label">Traduction Instantanée</div>
+                    </div>
+                    <div class="card-tools">
+                        <button class="tool-btn" id="btn-tts" title="Écouter la traduction (Synthèse Vocale)">
+                            <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                        </button>
+                        <button class="tool-btn" id="btn-copy-target" title="Copier la traduction">
+                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="stage-content">
+                    <div id="target-speaker-wrap"></div>
+                    <div class="translated-output empty" id="target-live-text">La traduction française apparaîtra ici en temps réel...</div>
+                </div>
+                <div class="stage-footer">
+                    <div>Traducteur : <span style="color: #38bdf8;">⚡ Neural MT Direct</span></div>
+                    <div class="latency-chip" style="color: #a78bfa;">Traduction : <span id="metric-trans">0</span> ms</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Chronological Stream Feed -->
+        <section class="feed-section">
+            <div class="feed-header">
+                <div class="feed-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+                    Flux Chronologique des Phrases
+                </div>
+                <div class="feed-actions">
+                    <button class="btn-export" id="btn-export-srt">Exporter SRT</button>
+                    <button class="btn-export" id="btn-export-md">Markdown</button>
+                    <button class="btn-export" id="btn-export-json">JSON</button>
+                    <button class="btn-export" id="btn-clear-feed" style="color: #f87171;">Effacer</button>
+                </div>
+            </div>
+
+            <div class="feed-list" id="feed-container">
+                <!-- Dynamically populated rows -->
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal Settings & Model Switcher -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3>Panneau de Contrôle & Modèles</h3>
+                <button class="tool-btn" id="btn-close-modal">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+            </div>
+
+            <div class="modal-tabs">
+                <button class="tab-btn active" data-tab="tab-models">Modèles ASR (Reconnaissance)</button>
+                <button class="tab-btn" data-tab="tab-obs">OBS Studio (Sous-titres)</button>
+                <button class="tab-btn" data-tab="tab-trans">Traduction & Langues</button>
+                <button class="tab-btn" data-tab="tab-audio">Microphone & VAD</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- Tab 1: Models Picker -->
+                <div class="tab-panel active" id="tab-models">
+                    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5;">
+                        <span style="color: #38bdf8; font-weight: 600;">✨ 11 Modèles 100% Locaux Intégrés (GPU Metal) :</span> Téléchargement en 1 clic et exécution directe sur votre Mac Apple Silicon sans aucun serveur externe.<br>
+                        <span style="color: #a5b4fc; font-weight: 600;">🚀 Modèles Avancés SOTA (Qwen3, Voxtral, Canary, Moonshine) :</span> Exécutables également à 100% en local sur votre Mac via un serveur local ultra-rapide (ex: Speaches sur <code>127.0.0.1:8000</code>).
+                    </div>
+                    <div class="models-deck-grid" id="models-deck-grid">
+                        <!-- Loaded dynamically -->
+                    </div>
+
+                    <!-- Remote Model Connect Sheet -->
+                    <div id="remote-connect-card" style="display: none; margin-top: 22px; padding: 22px; background: rgba(10, 15, 26, 0.95); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 16px; box-shadow: 0 20px 40px -10px rgba(0,0,0,0.9);">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <div style="width: 10px; height: 10px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 10px #38bdf8;"></div>
+                                <strong style="color: #ffffff; font-size: 1.05rem;" id="remote-card-name">Configuration du Modèle Distant</strong>
+                            </div>
+                            <button class="tool-btn" id="btn-close-remote-card">
+                                <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                            </button>
+                        </div>
+                        <div id="remote-card-desc" style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 16px; line-height: 1.45;"></div>
+                        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px;">
+                            <div>
+                                <label class="form-label" style="font-size: 0.78rem;">Endpoint ASR (URL compatible OpenAI / Speaches / vLLM)</label>
+                                <input type="text" class="form-input" id="remote-input-url" value="http://127.0.0.1:8000/v1/audio/transcriptions">
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size: 0.78rem;">Clé API (Optionnel)</label>
+                                <input type="password" class="form-input" id="remote-input-key" placeholder="Bearer token...">
+                            </div>
+                        </div>
+                        <div id="remote-test-banner" style="display: none; padding: 12px 16px; border-radius: 10px; font-size: 0.82rem; margin-bottom: 16px; line-height: 1.4;"></div>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <button class="btn-luxury" id="btn-test-remote-conn">Tester la connexion</button>
+                            <button class="btn-luxury btn-obs-action" id="btn-activate-remote">Connecter & Activer</button>
+                        </div>
+                        <div style="margin-top: 18px; padding: 16px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; font-size: 0.78rem; color: #94a3b8; line-height: 1.55;">
+                            <strong style="color: #cbd5e1; font-size: 0.82rem;">💡 Comment héberger ce modèle en local sur votre Mac ?</strong><br>
+                            Pour lancer un serveur ASR local ultra-rapide sur votre Mac :<br>
+                            <code style="display: block; margin: 8px 0; padding: 8px 12px; background: #030508; border-radius: 8px; color: #38bdf8; font-family: var(--font-mono); border: 1px solid rgba(255,255,255,0.08);">pip install speaches && speaches --host 127.0.0.1 --port 8000</code>
+                            <span style="color: #a5b4fc;">✨ Ou utilisez directement les modèles <strong>Whisper Metal GPU</strong> locaux ci-dessus (Tiny, Base, Small, Turbo) : ils fonctionnent à 100% sans aucun serveur externe.</span>
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- Tab 2: OBS Studio Setup -->
+                <div class="tab-panel" id="tab-obs">
+                    <div style="margin-bottom: 20px;">
+                        <div class="form-label">URL de la Source Navigateur OBS Studio</div>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" class="form-input" id="obs-final-url" readonly value="http://127.0.0.1:3000/obs">
+                            <button class="btn-luxury btn-obs-action" id="btn-copy-obs-modal">Copier</button>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">Mode d'affichage</label>
+                            <select class="form-select" id="obs-mode-select">
+                                <option value="dual">Bilingue (Original + Traduction)</option>
+                                <option value="translated">Traduction Uniquement</option>
+                                <option value="source">Langue Source Uniquement</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Thème Visuel</label>
+                            <select class="form-select" id="obs-theme-select">
+                                <option value="glow">Cyberpunk Glow (Bleu & Violet)</option>
+                                <option value="netflix">Sous-titres Cinéma (Netflix)</option>
+                                <option value="boxed">Boîte Noire Haut Contraste</option>
+                                <option value="clean">Minimaliste Verre Fumé</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Taille du Texte : <span id="val-obs-size">34</span> px</label>
+                            <input type="range" min="20" max="64" value="34" class="form-input" id="obs-size-slider">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Disparition après : <span id="val-obs-fade">6</span> s</label>
+                            <input type="range" min="2" max="20" value="6" class="form-input" id="obs-fade-slider">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Translation & Languages -->
+                <div class="tab-panel" id="tab-trans">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">Langue Source (Parole Microphone)</label>
+                            <select class="form-select" id="cfg-source-lang">
+                                <option value="fr">Français (FR) — Détection Auto Désactivée</option>
+                                <option value="en">Anglais (EN)</option>
+                                <option value="es">Espagnol (ES)</option>
+                                <option value="de">Allemand (DE)</option>
+                                <option value="it">Italien (IT)</option>
+                                <option value="pt">Portugais (PT)</option>
+                                <option value="ja">Japonais (JA)</option>
+                                <option value="zh">Chinois (ZH)</option>
+                                <option value="ru">Russe (RU)</option>
+                                <option value="ko">Coréen (KO)</option>
+                                <option value="ar">Arabe (AR)</option>
+                                <option value="auto">⚡ Détection Automatique (Multilingue)</option>
+                            </select>
+                            <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 5px;">
+                                💡 Verrouiller sur <strong>Français</strong> coupe l'auto-détection et bloque les hallucinations dans d'autres langues.
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Langue Cible (Traduction)</label>
+                            <select class="form-select" id="cfg-target-lang">
+                                <option value="en">Anglais (EN)</option>
+                                <option value="fr">Français (FR)</option>
+                                <option value="es">Espagnol (ES)</option>
+                                <option value="de">Allemand (DE)</option>
+                                <option value="it">Italien (IT)</option>
+                                <option value="pt">Portugais (PT)</option>
+                                <option value="ja">Japonais (JA)</option>
+                                <option value="zh">Chinois (ZH)</option>
+                                <option value="ru">Russe (RU)</option>
+                                <option value="ko">Coréen (KO)</option>
+                                <option value="ar">Arabe (AR)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Moteur de Traduction</label>
+                        <select class="form-select" id="cfg-trans-engine">
+                            <option value="auto">Automatique : Neural MT Haute Vitesse (Zero-Setup)</option>
+                            <option value="local_llm">Local LLM (LM Studio / Ollama / OpenAI API)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Tab 4: Audio Device & VAD -->
+                <div class="tab-panel" id="tab-audio">
+                    <div class="form-group">
+                        <label class="form-label">Périphérique d'Entrée Audio</label>
+                        <select class="form-select" id="cfg-audio-device">
+                            <option value="">Microphone Système par Défaut</option>
+                        </select>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">Seuil de Détection de Voix (VAD) : <span id="val-vad-thresh">0.015</span></label>
+                            <input type="range" min="0.005" max="0.08" step="0.002" value="0.015" class="form-input" id="cfg-vad-threshold">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Silence Fin de Phrase : <span id="val-vad-silence">700</span> ms</label>
+                            <input type="range" min="300" max="2000" step="50" value="700" class="form-input" id="cfg-vad-silence">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn-luxury" id="btn-cancel-modal">Fermer</button>
+                <button class="btn-luxury btn-obs-action" id="btn-save-modal">Enregistrer les Réglages</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast-box" id="toast-notify">Lien copié dans le presse-papier !</div>
+
+    <!-- Footer -->
+    <footer>
+        <div>VoiceBridge Pro &bull; Zéro I/O Disque &bull; Accélération Hardware Metal GPU (Apple Silicon)</div>
+        <div id="footer-device">Périphérique : Micro MacBook Air</div>
+    </footer>
+
+    <script>
+        // DOM Elements
+        const sourceLiveText = document.getElementById('source-live-text');
+        const targetLiveText = document.getElementById('target-live-text');
+        const sourceSpeakerWrap = document.getElementById('source-speaker-wrap');
+        const targetSpeakerWrap = document.getElementById('target-speaker-wrap');
+        const feedContainer = document.getElementById('feed-container');
+        const metricStt = document.getElementById('metric-stt');
+        const metricTrans = document.getElementById('metric-trans');
+        const metricTotal = document.getElementById('metric-total');
+        const sourceBadge = document.getElementById('source-badge');
+        const targetBadge = document.getElementById('target-badge');
+        const footerModelName = document.getElementById('footer-model-name');
+        const headerEngineLabel = document.getElementById('header-engine-label');
+        const btnToggleMic = document.getElementById('btn-toggle-mic');
+        const micLabel = document.getElementById('mic-label');
+        const dlProgressBanner = document.getElementById('dl-progress-banner');
+        const dlProgressBar = document.getElementById('dl-progress-bar');
+        const dlPercent = document.getElementById('dl-percent');
+        const dlBytes = document.getElementById('dl-bytes');
+        const dlSpeed = document.getElementById('dl-speed');
+        const dlStatusText = document.getElementById('dl-status-text');
+        const dlModelName = document.getElementById('dl-model-name');
+        const toast = document.getElementById('toast-notify');
+
+        // Modal
+        const settingsModal = document.getElementById('settings-modal');
+        const btnOpenSettings = document.getElementById('btn-open-settings');
+        const btnOpenObs = document.getElementById('btn-open-obs');
+        const btnCloseModal = document.getElementById('btn-close-modal');
+        const btnCancelModal = document.getElementById('btn-cancel-modal');
+        const btnSaveModal = document.getElementById('btn-save-modal');
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        const modelsDeckGrid = document.getElementById('models-deck-grid');
+
+        let isRecording = true;
+        let eventHistory = [];
+        let currentConfig = null;
+        let availableModels = [];
+        let downloadPollTimer = null;
+        let currentVolume = 0.0;
+
+        // Soundwave Canvas
+        const canvas = document.getElementById('soundwave-canvas');
+        const ctx = canvas.getContext('2d');
+        let wavePhase = 0;
+
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.clientWidth * window.devicePixelRatio;
+            canvas.height = canvas.parentElement.clientHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function renderSoundwave() {
+            const w = canvas.parentElement.clientWidth;
+            const h = canvas.parentElement.clientHeight;
+            ctx.clearRect(0, 0, w, h);
+
+            wavePhase += 0.04;
+            const amp = isRecording ? Math.max(12, currentVolume * 220) : 4;
+
+            // Draw fluid glowing waves
+            const gradients = [
+                { stroke: 'rgba(99, 102, 241, 0.7)', speed: 1.0, freq: 0.015, heightMult: 1.0 },
+                { stroke: 'rgba(6, 182, 212, 0.85)', speed: 1.4, freq: 0.02, heightMult: 0.75 },
+                { stroke: 'rgba(236, 72, 153, 0.6)', speed: 0.8, freq: 0.012, heightMult: 0.55 },
+            ];
+
+            gradients.forEach(g => {
+                ctx.beginPath();
+                ctx.lineWidth = 2.5;
+                ctx.strokeStyle = g.stroke;
+
+                for (let x = 0; x <= w; x += 4) {
+                    const normX = x / w;
+                    // Envelope function to taper edges smoothly
+                    const env = Math.sin(normX * Math.PI);
+                    const y = h / 2 + Math.sin(x * g.freq + wavePhase * g.speed) * amp * g.heightMult * env;
+                    if (x === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                }
+                ctx.stroke();
+            });
+
+            requestAnimationFrame(renderSoundwave);
+        }
+        renderSoundwave();
+
+        // Tabs
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabPanels.forEach(p => p.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(btn.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Open Modal
+        btnOpenSettings.addEventListener('click', () => {
+            loadConfigIntoGui();
+            loadModelsCatalog();
+            settingsModal.classList.add('open');
+        });
+
+        btnOpenObs.addEventListener('click', () => {
+            loadConfigIntoGui();
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabPanels.forEach(p => p.classList.remove('active'));
+            document.querySelector('[data-tab="tab-obs"]').classList.add('active');
+            document.getElementById('tab-obs').classList.add('active');
+            settingsModal.classList.add('open');
+        });
+
+        sourceBadge.addEventListener('click', () => {
+            loadConfigIntoGui();
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabPanels.forEach(p => p.classList.remove('active'));
+            document.querySelector('[data-tab="tab-trans"]').classList.add('active');
+            document.getElementById('tab-trans').classList.add('active');
+            settingsModal.classList.add('open');
+        });
+
+        targetBadge.addEventListener('click', () => {
+            loadConfigIntoGui();
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabPanels.forEach(p => p.classList.remove('active'));
+            document.querySelector('[data-tab="tab-trans"]').classList.add('active');
+            document.getElementById('tab-trans').classList.add('active');
+            settingsModal.classList.add('open');
+        });
+
+        btnCloseModal.addEventListener('click', () => settingsModal.classList.remove('open'));
+        btnCancelModal.addEventListener('click', () => settingsModal.classList.remove('open'));
+
+        // Load Models Catalog
+        async function loadModelsCatalog() {
+            try {
+                const res = await fetch('/api/models');
+                if (res.ok) {
+                    availableModels = await res.json();
+                    renderModelsGrid();
+                }
+            } catch (e) {
+                console.error('Error loading models:', e);
+            }
+        }
+
+        let activeConfiguringModel = null;
+        const remoteConnectCard = document.getElementById('remote-connect-card');
+        const remoteCardName = document.getElementById('remote-card-name');
+        const remoteCardDesc = document.getElementById('remote-card-desc');
+        const remoteInputUrl = document.getElementById('remote-input-url');
+        const remoteInputKey = document.getElementById('remote-input-key');
+        const remoteTestBanner = document.getElementById('remote-test-banner');
+        const btnCloseRemoteCard = document.getElementById('btn-close-remote-card');
+        const btnTestRemoteConn = document.getElementById('btn-test-remote-conn');
+        const btnActivateRemote = document.getElementById('btn-activate-remote');
+
+        if (btnCloseRemoteCard) {
+            btnCloseRemoteCard.addEventListener('click', () => {
+                remoteConnectCard.style.display = 'none';
+            });
+        }
+
+        if (btnTestRemoteConn) {
+            btnTestRemoteConn.addEventListener('click', async () => {
+                if (!activeConfiguringModel) return;
+                const url = remoteInputUrl.value.trim();
+                remoteTestBanner.style.display = 'block';
+                remoteTestBanner.style.background = 'rgba(255, 255, 255, 0.05)';
+                remoteTestBanner.style.border = '1px solid var(--border-glass)';
+                remoteTestBanner.style.color = '#cbd5e1';
+                remoteTestBanner.innerHTML = `Test de connexion vers <code>${escapeHtml(url)}</code>...`;
+
+                try {
+                    const pingRes = await fetch('/api/models/switch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model_id: activeConfiguringModel.id,
+                            api_url: url,
+                            api_key: remoteInputKey.value.trim() || null
+                        })
+                    });
+                    const data = await pingRes.json();
+                    if (data.status === 'ready') {
+                        remoteTestBanner.style.background = 'rgba(16, 185, 129, 0.15)';
+                        remoteTestBanner.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+                        remoteTestBanner.style.color = '#34d399';
+                        remoteTestBanner.innerHTML = `🟢 <strong>Serveur ASR En Ligne !</strong> Le modèle a été activé avec succès.`;
+                        showToast(`${activeConfiguringModel.name} activé !`);
+                        fetchStatus();
+                        loadModelsCatalog();
+                    } else {
+                        remoteTestBanner.style.background = 'rgba(239, 68, 68, 0.15)';
+                        remoteTestBanner.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                        remoteTestBanner.style.color = '#f87171';
+                        remoteTestBanner.innerHTML = `🔴 <strong>Serveur injoignable</strong> sur cette URL. Lancez <code>speaches</code> ou <code>vLLM</code> sur votre machine, ou vérifiez l'adresse.`;
+                    }
+                } catch (err) {
+                    remoteTestBanner.style.background = 'rgba(239, 68, 68, 0.15)';
+                    remoteTestBanner.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                    remoteTestBanner.style.color = '#f87171';
+                    remoteTestBanner.innerHTML = `🔴 Erreur : ${escapeHtml(err.message || String(err))}`;
+                }
+            });
+        }
+
+        if (btnActivateRemote) {
+            btnActivateRemote.addEventListener('click', async () => {
+                if (!activeConfiguringModel) return;
+                const url = remoteInputUrl.value.trim();
+                const key = remoteInputKey.value.trim() || null;
+                showToast(`Connexion à ${activeConfiguringModel.name}...`);
+                try {
+                    const res = await fetch('/api/models/switch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model_id: activeConfiguringModel.id,
+                            api_url: url,
+                            api_key: key
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.status === 'ready') {
+                        showToast(`Succès : ${data.message}`);
+                        settingsModal.classList.remove('open');
+                        fetchStatus();
+                        loadModelsCatalog();
+                    } else {
+                        remoteTestBanner.style.display = 'block';
+                        remoteTestBanner.style.background = 'rgba(239, 68, 68, 0.15)';
+                        remoteTestBanner.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                        remoteTestBanner.style.color = '#f87171';
+                        remoteTestBanner.innerHTML = `🔴 <strong>Connexion impossible :</strong> ${escapeHtml(data.message)}`;
+                    }
+                } catch (e) {
+                    showToast(`Erreur : ${e}`);
+                }
+            });
+        }
+
+        function openRemoteConfigDrawer(model) {
+            activeConfiguringModel = model;
+            remoteCardName.textContent = `Configuration : ${model.name}`;
+            remoteCardDesc.textContent = `${model.description} (${model.provider} • Licence ${model.license})`;
+            remoteInputUrl.value = model.default_api_url || 'http://127.0.0.1:8000/v1/audio/transcriptions';
+            remoteTestBanner.style.display = 'none';
+            remoteConnectCard.style.display = 'block';
+            remoteConnectCard.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function renderModelsGrid() {
+            modelsDeckGrid.innerHTML = '';
+            availableModels.forEach(m => {
+                const tile = document.createElement('div');
+                tile.className = 'model-tile';
+                if (m.is_active) {
+                    tile.classList.add('selected');
+                }
+
+                let statusBadge = '';
+                let actionBtnText = '';
+                if (m.is_active) {
+                    statusBadge = '<span class="tile-status-tag status-ready">● Actif sur Metal GPU</span>';
+                    actionBtnText = '<span style="color: #34d399; font-weight: 700; font-size: 0.76rem;">✓ En Cours</span>';
+                } else if (m.is_installed) {
+                    statusBadge = '<span class="tile-status-tag status-ready">Installé Metal</span>';
+                    actionBtnText = '<span style="color: #38bdf8; font-weight: 600; font-size: 0.76rem;">Activer</span>';
+                } else if (m.is_local_gpu) {
+                    statusBadge = `<span class="tile-status-tag status-download">À Télécharger</span>`;
+                    actionBtnText = `<span style="color: #f59e0b; font-weight: 600; font-size: 0.76rem;">⚡ Télécharger (${m.file_size_mb} Mo)</span>`;
+                } else {
+                    statusBadge = '<span class="tile-status-tag status-remote">Local Speaches</span>';
+                    actionBtnText = '<span style="color: #a5b4fc; font-weight: 600; font-size: 0.76rem;">⚙️ Activer Local</span>';
+                }
+
+                tile.innerHTML = `
+                    <div class="tile-top">
+                        <span class="tile-name">${m.name}</span>
+                        <span class="tile-badge">${m.badge}</span>
+                    </div>
+                    <div class="tile-desc">${m.description}</div>
+                    <div class="tile-status">
+                        <span>${m.provider}</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            ${statusBadge}
+                            ${actionBtnText}
+                        </div>
+                    </div>
+                `;
+
+                tile.addEventListener('click', () => {
+                    if (m.is_local_gpu) {
+                        triggerLocalModelSwitch(m);
+                    } else {
+                        openRemoteConfigDrawer(m);
+                    }
+                });
+                modelsDeckGrid.appendChild(tile);
+            });
+        }
+
+        // Trigger Local Model Switch with Live Download
+        async function triggerLocalModelSwitch(model) {
+            remoteConnectCard.style.display = 'none';
+            if (model.is_active) {
+                showToast(`${model.name} est déjà actif sur votre GPU Metal.`);
+                return;
+            }
+
+            try {
+                showToast(`Activation de ${model.name}...`);
+                const res = await fetch('/api/models/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_id: model.id })
+                });
+
+                const data = await res.json();
+                if (data.status === 'downloading') {
+                    startDownloadTracker(model.name);
+                    settingsModal.classList.remove('open');
+                } else if (data.status === 'ready') {
+                    showToast(`Succès : ${data.message}`);
+                    fetchStatus();
+                    loadModelsCatalog();
+                    settingsModal.classList.remove('open');
+                } else {
+                    showToast(`Erreur : ${data.message}`);
+                }
+            } catch (e) {
+                showToast(`Erreur réseau : ${e}`);
+            }
+        }
+
+
+        // Real-time Download Polling Tracker
+        function startDownloadTracker(modelDisplayName) {
+            dlProgressBanner.classList.add('active');
+            dlModelName.textContent = `Téléchargement : ${modelDisplayName}`;
+            dlProgressBar.style.width = '0%';
+
+            if (downloadPollTimer) clearInterval(downloadPollTimer);
+
+            downloadPollTimer = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/models/download-progress');
+                    if (res.ok) {
+                        const dl = await res.json();
+                        if (dl.is_downloading) {
+                            dlProgressBar.style.width = `${dl.percent}%`;
+                            dlPercent.textContent = `${dl.percent.toFixed(1)}%`;
+                            dlBytes.textContent = `${(dl.downloaded_bytes / (1024 * 1024)).toFixed(1)} / ${(dl.total_bytes / (1024 * 1024)).toFixed(1)} Mo`;
+                            dlSpeed.textContent = `${dl.speed_mb_s.toFixed(1)} Mo/s`;
+                            dlStatusText.textContent = dl.status_message;
+                        } else {
+                            // Download finished
+                            clearInterval(downloadPollTimer);
+                            downloadPollTimer = null;
+                            dlProgressBar.style.width = '100%';
+                            dlPercent.textContent = '100%';
+                            dlStatusText.textContent = 'Modèle chargé avec succès sur Metal GPU !';
+                            showToast(`${modelDisplayName} prêt et actif !`);
+                            setTimeout(() => {
+                                dlProgressBanner.classList.remove('active');
+                            }, 3500);
+                            fetchStatus();
+                            loadModelsCatalog();
+                        }
+                    }
+                } catch (err) {
+                    console.error('Download poll error:', err);
+                }
+            }, 250);
+        }
+
+        // Fetch System Status
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (res.ok) {
+                    const data = await res.json();
+                    currentVolume = data.current_volume;
+                    updateMicState(data.is_recording);
+
+                    const shortModel = data.stt_model.split('/').pop();
+                    footerModelName.textContent = shortModel;
+                    const srcDisplay = (data.source_lang === 'auto') ? 'AUTO' : data.source_lang.toUpperCase();
+                    headerEngineLabel.innerHTML = `&bull; ${shortModel} &bull; <span style="color:#a5b4fc">${srcDisplay}</span> &rarr; <span style="color:#38bdf8">${data.target_lang.toUpperCase()}</span>`;
+                    sourceBadge.textContent = srcDisplay;
+                    targetBadge.textContent = data.target_lang.toUpperCase();
+
+                    const labelEl = document.getElementById('source-card-label');
+                    if (labelEl) {
+                        labelEl.textContent = (data.source_lang === 'auto') ? 'Discours (Détection Auto)' : `Discours Verrouillé (${srcDisplay})`;
+                    }
+                    document.getElementById('footer-device').textContent = `Périphérique : ${data.audio_device}`;
+                    document.getElementById('deck-device-tag').textContent = `${data.audio_device} &bull; 48000 Hz`;
+
+                    if (data.is_downloading && !downloadPollTimer) {
+                        startDownloadTracker(data.active_model_id);
+                    }
+                }
+            } catch (e) {
+                console.warn('Status error:', e);
+            }
+        }
+
+        // Toggle Mic
+        btnToggleMic.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/toggle-mic', { method: 'POST' });
+                if (res.ok) {
+                    const data = await res.json();
+                    updateMicState(data.is_recording);
+                }
+            } catch (e) {
+                console.error('Mic toggle error:', e);
+            }
+        });
+
+        function updateMicState(recording) {
+            isRecording = recording;
+            if (isRecording) {
+                btnToggleMic.classList.remove('muted');
+                micLabel.textContent = 'Micro Actif';
+                document.getElementById('header-status-label').textContent = 'EN LIGNE';
+            } else {
+                btnToggleMic.classList.add('muted');
+                micLabel.textContent = 'Micro Coupé';
+                document.getElementById('header-status-label').textContent = 'EN PAUSE';
+            }
+        }
+
+        // SSE Real-time Feed
+        function initSse() {
+            const es = new EventSource('/api/stream');
+            es.onmessage = (e) => {
+                try {
+                    const event = JSON.parse(e.data);
+                    handlePipelineEvent(event);
+                } catch (err) {
+                    console.error('SSE JSON error:', err);
+                }
+            };
+            es.onerror = () => setTimeout(initSse, 2000);
+        }
+
+        function handlePipelineEvent(event) {
+            eventHistory.unshift(event);
+
+            metricStt.textContent = event.stt_duration_ms;
+            metricTrans.textContent = event.translation_duration_ms;
+            metricTotal.textContent = event.total_duration_ms;
+
+            sourceLiveText.classList.remove('empty');
+            targetLiveText.classList.remove('empty');
+
+            // Speaker Tag
+            if (event.speaker) {
+                const isTwo = event.speaker.includes('2') || event.speaker.toLowerCase().includes('b');
+                const tagHtml = `<span class="speaker-tag ${isTwo ? 'locuteur-2' : ''}">${escapeHtml(event.speaker)}</span>`;
+                sourceSpeakerWrap.innerHTML = tagHtml;
+                targetSpeakerWrap.innerHTML = tagHtml;
+            } else {
+                sourceSpeakerWrap.innerHTML = '';
+                targetSpeakerWrap.innerHTML = '';
+            }
+
+            sourceLiveText.textContent = event.original_text;
+            targetLiveText.textContent = event.translated_text;
+
+            // Feed Row
+            const row = document.createElement('div');
+            row.className = 'feed-item';
+            row.innerHTML = `
+                <div class="item-time">${event.timestamp}</div>
+                <div class="item-source">${event.speaker ? `<strong>[${escapeHtml(event.speaker)}]</strong> ` : ''}${escapeHtml(event.original_text)}</div>
+                <div class="item-target">${escapeHtml(event.translated_text)}</div>
+                <div class="item-latency">${event.total_duration_ms} ms</div>
+            `;
+            feedContainer.prepend(row);
+        }
+
+        // Web Speech TTS
+        function speakText(text, lang) {
+            if ('speechSynthesis' in window && text) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = lang || 'fr';
+                speechSynthesis.speak(utterance);
+            }
+        }
+
+        document.getElementById('btn-tts').addEventListener('click', () => {
+            speakText(targetLiveText.textContent, currentConfig ? currentConfig.translation.target_lang : 'fr');
+        });
+
+        // Copy buttons
+        function copyText(str, msg) {
+            navigator.clipboard.writeText(str);
+            showToast(msg);
+        }
+
+        document.getElementById('btn-copy-source').addEventListener('click', () => {
+            copyText(sourceLiveText.textContent, 'Discours original copié !');
+        });
+        document.getElementById('btn-copy-target').addEventListener('click', () => {
+            copyText(targetLiveText.textContent, 'Traduction copiée !');
+        });
+        document.getElementById('btn-copy-obs-modal').addEventListener('click', () => {
+            copyText(document.getElementById('obs-final-url').value, 'Lien OBS copié !');
+        });
+
+        function showToast(msg) {
+            toast.textContent = msg;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 2800);
+        }
+
+        // Load & Save Config
+        async function loadConfigIntoGui() {
+            try {
+                const res = await fetch('/api/config');
+                if (res.ok) {
+                    currentConfig = await res.json();
+                    const activeSrcLang = (currentConfig.stt && currentConfig.stt.language && currentConfig.stt.language !== 'auto')
+                        ? currentConfig.stt.language
+                        : (currentConfig.translation.source_lang || 'fr');
+                    document.getElementById('cfg-source-lang').value = activeSrcLang;
+                    document.getElementById('cfg-target-lang').value = currentConfig.translation.target_lang;
+                    document.getElementById('cfg-trans-engine').value = currentConfig.translation.engine;
+
+                    document.getElementById('cfg-vad-threshold').value = currentConfig.audio.vad_threshold;
+                    document.getElementById('val-vad-thresh').textContent = currentConfig.audio.vad_threshold;
+                    document.getElementById('cfg-vad-silence').value = currentConfig.audio.vad_silence_duration_ms;
+                    document.getElementById('val-vad-silence').textContent = currentConfig.audio.vad_silence_duration_ms;
+
+                    document.getElementById('obs-mode-select').value = currentConfig.obs.mode || 'dual';
+                    document.getElementById('obs-size-slider').value = currentConfig.obs.font_size || 34;
+                    document.getElementById('val-obs-size').textContent = currentConfig.obs.font_size || 34;
+                    document.getElementById('obs-fade-slider').value = currentConfig.obs.fade_timeout_secs || 6;
+                    document.getElementById('val-obs-fade').textContent = currentConfig.obs.fade_timeout_secs || 6;
+
+                    updateObsUrl();
+                }
+            } catch (e) {
+                console.error('Config fetch error:', e);
+            }
+        }
+
+        btnSaveModal.addEventListener('click', async () => {
+            if (!currentConfig) return;
+
+            const chosenSourceLang = document.getElementById('cfg-source-lang').value;
+            currentConfig.translation.source_lang = chosenSourceLang;
+            if (!currentConfig.stt) currentConfig.stt = {};
+            currentConfig.stt.language = chosenSourceLang;
+
+            currentConfig.translation.target_lang = document.getElementById('cfg-target-lang').value;
+            currentConfig.translation.engine = document.getElementById('cfg-trans-engine').value;
+
+            currentConfig.audio.vad_threshold = parseFloat(document.getElementById('cfg-vad-threshold').value);
+            currentConfig.audio.vad_silence_duration_ms = parseInt(document.getElementById('cfg-vad-silence').value, 10);
+            currentConfig.audio.device_name = document.getElementById('cfg-audio-device').value || null;
+
+            currentConfig.obs.mode = document.getElementById('obs-mode-select').value;
+            currentConfig.obs.font_size = parseInt(document.getElementById('obs-size-slider').value, 10);
+            currentConfig.obs.fade_timeout_secs = parseInt(document.getElementById('obs-fade-slider').value, 10);
+
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(currentConfig)
+                });
+                if (res.ok) {
+                    showToast('Réglages sauvegardés & appliqués !');
+                    settingsModal.classList.remove('open');
+                    fetchStatus();
+                }
+            } catch (e) {
+                alert('Erreur sauvegarde : ' + e);
+            }
+        });
+
+        // OBS Dynamic URL
+        function updateObsUrl() {
+            const mode = document.getElementById('obs-mode-select').value;
+            const size = document.getElementById('obs-size-slider').value;
+            const theme = document.getElementById('obs-theme-select').value;
+            const fade = document.getElementById('obs-fade-slider').value;
+            document.getElementById('obs-final-url').value = `${window.location.origin}/obs?mode=${mode}&theme=${theme}&size=${size}&fade=${fade}`;
+        }
+
+        ['obs-mode-select', 'obs-size-slider', 'obs-theme-select', 'obs-fade-slider'].forEach(id => {
+            document.getElementById(id).addEventListener('input', () => {
+                document.getElementById('val-obs-size').textContent = document.getElementById('obs-size-slider').value;
+                document.getElementById('val-obs-fade').textContent = document.getElementById('obs-fade-slider').value;
+                updateObsUrl();
+            });
+        });
+
+        document.getElementById('cfg-vad-threshold').addEventListener('input', (e) => {
+            document.getElementById('val-vad-thresh').textContent = e.target.value;
+        });
+        document.getElementById('cfg-vad-silence').addEventListener('input', (e) => {
+            document.getElementById('val-vad-silence').textContent = e.target.value;
+        });
+
+        // Export handlers
+        document.getElementById('btn-export-srt').addEventListener('click', () => {
+            if (eventHistory.length === 0) return alert('Aucune phrase à exporter.');
+            let srt = '';
+            let idx = 1;
+            [...eventHistory].reverse().forEach(e => {
+                const t = `${e.timestamp},000`;
+                srt += `${idx}\n${t} --> ${t}\n${e.translated_text}\n\n`;
+                idx++;
+            });
+            downloadBlob(srt, 'sous-titres_voicebridge.srt', 'text/plain');
+        });
+
+        document.getElementById('btn-export-md').addEventListener('click', () => {
+            if (eventHistory.length === 0) return alert('Aucune phrase à exporter.');
+            let md = '# VoiceBridge Pro — Transcriptions & Traductions\n\n| Heure | Locuteur | Original | Traduction | Latence |\n|---|---|---|---|---|\n';
+            eventHistory.forEach(e => {
+                md += `| ${e.timestamp} | ${e.speaker || '-'} | ${e.original_text.replace(/\|/g, '-')} | ${e.translated_text.replace(/\|/g, '-')} | ${e.total_duration_ms}ms |\n`;
+            });
+            downloadBlob(md, 'transcriptions_voicebridge.md', 'text/markdown');
+        });
+
+        document.getElementById('btn-export-json').addEventListener('click', () => {
+            if (eventHistory.length === 0) return alert('Aucune phrase à exporter.');
+            downloadBlob(JSON.stringify(eventHistory, null, 2), 'transcriptions_voicebridge.json', 'application/json');
+        });
+
+        document.getElementById('btn-clear-feed').addEventListener('click', () => {
+            eventHistory = [];
+            feedContainer.innerHTML = '';
+        });
+
+        function downloadBlob(content, filename, type) {
+            const blob = new Blob([content], { type });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Polling status
+        setInterval(fetchStatus, 1500);
+
+        // Start
+        loadModelsCatalog();
+        fetchStatus();
+        initSse();
+    </script>
+</body>
+</html>
