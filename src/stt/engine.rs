@@ -18,9 +18,9 @@ pub struct TranscriptionResult {
 }
 
 pub struct WhisperEngine {
+    state: WhisperState,
     #[allow(dead_code)]
     _ctx: WhisperContext,
-    state: WhisperState,
     language: String,
     n_threads: i32,
     #[allow(dead_code)]

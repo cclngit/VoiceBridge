@@ -11,7 +11,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
-    div, hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    div, hsla, img, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
     relative, size, App, AppContext as _, ClickEvent, ClipboardItem, Context, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Rgba,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowBounds,
@@ -611,14 +611,19 @@ impl VoiceBridgeApp {
                 .child(
                     // App Branding
                     h_flex()
-                        .gap_2()
+                        .gap_2p5()
                         .items_center()
+                        .child(
+                            img("docs/logo.png")
+                                .size(px(24.))
+                                .rounded(px(6.))
+                        )
                         .child(
                             div()
                                 .text_base()
                                 .font_semibold()
                                 .text_color(TEXT_MAIN)
-                                .child("VoiceBridge"),
+                                .child("VoiceBridge Pro"),
                         ),
                 )
                 .child(
@@ -2411,7 +2416,33 @@ pub fn run_gui(
     state: AppState,
     tokio_handle: tokio::runtime::Handle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = gpui_kit::application().with_assets(AllAssets);
+    struct AppAssets;
+
+    impl gpui_kit::AssetSource for AppAssets {
+        fn load(
+            &self,
+            path: &str,
+        ) -> Result<std::option::Option<std::borrow::Cow<'static, [u8]>>, gpui_kit::private::anyhow::Error> {
+            if path == "docs/logo.png" || path == "logo.png" {
+                const LOGO_PNG: &[u8] = include_bytes!("../../docs/logo.png");
+                return Ok(Some(std::borrow::Cow::Borrowed(LOGO_PNG)));
+            }
+            AllAssets.load(path)
+        }
+
+        fn list(
+            &self,
+            path: &str,
+        ) -> Result<Vec<SharedString>, gpui_kit::private::anyhow::Error> {
+            let mut list = AllAssets.list(path)?;
+            if path.is_empty() || path == "docs" {
+                list.push(SharedString::from("docs/logo.png"));
+            }
+            Ok(list)
+        }
+    }
+
+    let app = gpui_kit::application().with_assets(AppAssets);
 
     app.run(move |cx| {
         gpui_kit::init(cx);

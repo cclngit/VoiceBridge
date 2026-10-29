@@ -25,11 +25,13 @@ use tower_http::cors::CorsLayer;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const OBS_HTML: &str = include_str!("../web/obs.html");
+const LOGO_PNG: &[u8] = include_bytes!("../../docs/logo.png");
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_handler))
         .route("/obs", get(obs_handler))
+        .route("/logo.png", get(logo_handler))
         .route("/api/stream", get(sse_handler))
         .route("/api/status", get(status_handler))
         .route("/api/history", get(history_handler))
@@ -50,6 +52,10 @@ async fn index_handler() -> Html<&'static str> {
 
 async fn obs_handler() -> Html<&'static str> {
     Html(OBS_HTML)
+}
+
+async fn logo_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static [u8]) {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], LOGO_PNG)
 }
 
 async fn status_handler(State(state): State<AppState>) -> Json<SystemStatus> {

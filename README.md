@@ -1,10 +1,16 @@
+<p align="center">
+  <img src="docs/logo.png" alt="VoiceBridge Logo" width="160" style="border-radius: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+</p>
+
 # VoiceBridge — Speech To Text To Translate (Rust)
 
-[![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust)](https://www.rust-lang.org/)
-[![GUI](https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg)](https://github.com/longbridge/gpui-kit)
-[![Metal GPU](https://img.shields.io/badge/macOS-Metal_GPU-success.svg?logo=apple)](https://developer.apple.com/metal/)
-[![OBS Studio](https://img.shields.io/badge/OBS-Browser_Source_Overlay-blue.svg)](https://obsproject.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust" alt="Rust"></a>
+  <a href="https://github.com/longbridge/gpui-kit"><img src="https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg" alt="GUI"></a>
+  <a href="https://developer.apple.com/metal/"><img src="https://img.shields.io/badge/macOS-Metal_GPU-success.svg?logo=apple" alt="Metal GPU"></a>
+  <a href="https://obsproject.com/"><img src="https://img.shields.io/badge/OBS-Browser_Source_Overlay-blue.svg" alt="OBS Studio"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
 
 Pipeline de reconnaissance vocale et traduction multilingue en temps réel, ultra-rapide et 100% hors-ligne, écrit en **Rust**. Doté d'une interface graphique native propulsée par **GPUI** (accélération matérielle Metal / Vulkan / DirectX), d'un moteur multi-modèles (Whisper Metal GPU, Qwen3-ASR, Voxtral, Canary, Moonshine, VibeVoice), d'une incrustation transparente pour **OBS Studio**, d'un streaming audio zéro-disque en mémoire et d'un cycle de vie automatique du serveur ASR.
 
