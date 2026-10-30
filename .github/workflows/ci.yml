@@ -77,7 +77,7 @@ jobs:
             pkg_glob: dist/VoiceBridge-linux-arm64.deb
 
           # ── Windows (.exe Inno Setup Installer & Standalone .exe) ───
-          - os: windows-latest
+          - os: windows-2022
             label: Windows x86_64 (.exe Setup & Portable — GPU NVIDIA / Vulkan / CUDA)
             artifact: VoiceBridge-windows-x86_64
             target: x86_64-pc-windows-msvc
@@ -246,6 +246,7 @@ jobs:
           }
           echo "TRACKFILEACCESS=false" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "TrackFileAccess=false" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "CMAKE_BUILD_PARALLEL_LEVEL=1" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           if (-not $isArm64Target) {
             $vkSdk = Join-Path $env:RUNNER_TEMP "VulkanSDK"
