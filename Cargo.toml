@@ -1,6 +1,6 @@
 [package]
 name = "VoiceBridge"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 build = "build.rs"
 description = "VoiceBridge — Real-time Speech-to-Text-to-Translate pipeline with local Metal/CUDA/Vulkan GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
