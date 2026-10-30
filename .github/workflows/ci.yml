@@ -249,6 +249,14 @@ jobs:
           echo "CMAKE_BUILD_PARALLEL_LEVEL=1" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           if (-not $isArm64Target) {
+            if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+              choco install ninja -y
+            }
+            echo "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Configured CMAKE_GENERATOR=Ninja"
+          }
+
+          if (-not $isArm64Target) {
             $vkSdk = Join-Path $env:RUNNER_TEMP "VulkanSDK"
             New-Item -ItemType Directory -Force -Path "$vkSdk\Include", "$vkSdk\Lib", "$vkSdk\Bin" | Out-Null
 
