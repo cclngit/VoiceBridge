@@ -244,6 +244,8 @@ jobs:
             echo "CARGO_TARGET_DIR=$shortTarget" | Out-File -FilePath $env:GITHUB_ENV -Append
             Write-Host "Configured short CARGO_TARGET_DIR=$shortTarget -> $targetDir"
           }
+          echo "TRACKFILEACCESS=false" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "TrackFileAccess=false" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           if (-not $isArm64Target) {
             $vkSdk = Join-Path $env:RUNNER_TEMP "VulkanSDK"
@@ -436,9 +438,14 @@ jobs:
           }
           Write-Host "Building ${{ matrix.target }} with features: '$featuresArg'"
           Remove-Item "target\${{ matrix.target }}\release\build\whisper-rs-sys-*\out\build\CMakeCache.txt" -ErrorAction SilentlyContinue
-          cmd /c "cargo build --release --locked --target ${{ matrix.target }} $featuresArg > build.log 2>&1"
+          $targetFlag = if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc") { "" } else { "--target ${{ matrix.target }}" }
+          cmd /c "cargo build --release --locked $targetFlag $featuresArg > build.log 2>&1"
           $code = $LASTEXITCODE
           Get-Content build.log
+          if ($code -eq 0 -and "${{ matrix.target }}" -eq "x86_64-pc-windows-msvc") {
+            New-Item -ItemType Directory -Force -Path "target\${{ matrix.target }}\release" | Out-Null
+            Copy-Item "target\release\VoiceBridge.exe" "target\${{ matrix.target }}\release\VoiceBridge.exe" -Force
+          }
           if ($code -ne 0) {
             $clean = Get-Content build.log | ForEach-Object { $_ -replace '\x1b\[[0-9;]*[a-zA-Z]', '' }
             $errMatches = $clean |
@@ -468,8 +475,12 @@ jobs:
           lipo -info target/universal-apple-darwin/release/VoiceBridge
 
       - name: Run unit tests
-        if: ${{ !matrix.universal_macos }}
+        if: ${{ !matrix.universal_macos && matrix.target != 'x86_64-pc-windows-msvc' }}
         run: cargo test --release --locked --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+
+      - name: Run unit tests on Windows x86_64
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --release --locked ${{ matrix.cargo_features }}
 
       - name: Smoke test CLI on Unix (--help)
         if: runner.os != 'Windows'
