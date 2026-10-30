@@ -1,9 +1,47 @@
 use serde::{Deserialize, Serialize};
+use std::ffi::CStr;
+
+/// Information about a physical GPU device detected at runtime by `ggml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuDeviceInfo {
+    /// 0-based GPU index passed to `WhisperContextParameters::gpu_device`.
+    pub index: i32,
+    /// Backend family name (`CUDA`, `Vulkan`, `Metal`, `ROCm`, `GPU`).
+    pub backend: String,
+    /// Internal ggml device identifier (`CUDA0`, `Vulkan0`, `MTL0`, etc.).
+    pub dev_name: String,
+    /// Hardware description (`NVIDIA GeForce RTX 5060`, `Apple M3 Max`, etc.).
+    pub description: String,
+    /// Free VRAM in MB.
+    pub vram_free_mb: u64,
+    /// Total VRAM in MB.
+    pub vram_total_mb: u64,
+}
+
+/// Returns the list of compiled GPU backend identifiers.
+pub fn compiled_gpu_backends() -> Vec<&'static str> {
+    let mut list = Vec::new();
+    if cfg!(target_os = "macos") {
+        list.push("metal");
+    }
+    if cfg!(feature = "cuda") {
+        list.push("cuda");
+    }
+    if cfg!(feature = "vulkan") {
+        list.push("vulkan");
+    }
+    if cfg!(feature = "hipblas") {
+        list.push("rocm");
+    }
+    list
+}
 
 /// Returns the compiled hardware GPU backend label for `whisper.cpp`, if any.
 pub const fn compiled_gpu_backend_label() -> Option<&'static str> {
     if cfg!(target_os = "macos") {
         Some("Metal GPU")
+    } else if cfg!(all(feature = "cuda", feature = "vulkan")) {
+        Some("CUDA / Vulkan GPU")
     } else if cfg!(feature = "cuda") {
         Some("CUDA GPU")
     } else if cfg!(feature = "vulkan") {
@@ -20,12 +58,157 @@ pub const fn has_compiled_gpu_backend() -> bool {
     compiled_gpu_backend_label().is_some()
 }
 
+/// Enumerates all physical GPU / iGPU devices visible to `ggml` at runtime.
+pub fn list_gpu_devices() -> Vec<GpuDeviceInfo> {
+    let mut devices = Vec::new();
+    if !has_compiled_gpu_backend() {
+        return devices;
+    }
+
+    unsafe {
+        let count = whisper_rs::whisper_rs_sys::ggml_backend_dev_count();
+        let mut gpu_idx: i32 = 0;
+
+        for i in 0..count {
+            let dev = whisper_rs::whisper_rs_sys::ggml_backend_dev_get(i);
+            if dev.is_null() {
+                continue;
+            }
+            let dev_type = whisper_rs::whisper_rs_sys::ggml_backend_dev_type(dev);
+            if dev_type == whisper_rs::whisper_rs_sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU
+                || dev_type == whisper_rs::whisper_rs_sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU
+            {
+                let name_ptr = whisper_rs::whisper_rs_sys::ggml_backend_dev_name(dev);
+                let dev_name = if !name_ptr.is_null() {
+                    CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+                } else {
+                    format!("GPU{}", gpu_idx)
+                };
+
+                let desc_ptr = whisper_rs::whisper_rs_sys::ggml_backend_dev_description(dev);
+                let description = if !desc_ptr.is_null() {
+                    CStr::from_ptr(desc_ptr).to_string_lossy().trim().to_string()
+                } else {
+                    dev_name.clone()
+                };
+
+                let reg = whisper_rs::whisper_rs_sys::ggml_backend_dev_backend_reg(dev);
+                let backend = if !reg.is_null() {
+                    let reg_name_ptr = whisper_rs::whisper_rs_sys::ggml_backend_reg_name(reg);
+                    if !reg_name_ptr.is_null() {
+                        CStr::from_ptr(reg_name_ptr).to_string_lossy().into_owned()
+                    } else {
+                        infer_backend_from_dev_name(&dev_name)
+                    }
+                } else {
+                    infer_backend_from_dev_name(&dev_name)
+                };
+
+                let mut free_bytes: usize = 0;
+                let mut total_bytes: usize = 0;
+                whisper_rs::whisper_rs_sys::ggml_backend_dev_memory(
+                    dev,
+                    &mut free_bytes,
+                    &mut total_bytes,
+                );
+
+                devices.push(GpuDeviceInfo {
+                    index: gpu_idx,
+                    backend,
+                    dev_name,
+                    description,
+                    vram_free_mb: (free_bytes as u64) / (1024 * 1024),
+                    vram_total_mb: (total_bytes as u64) / (1024 * 1024),
+                });
+
+                gpu_idx += 1;
+            }
+        }
+    }
+
+    devices
+}
+
+fn infer_backend_from_dev_name(dev_name: &str) -> String {
+    let lower = dev_name.to_ascii_lowercase();
+    if lower.starts_with("cuda") {
+        "CUDA".to_string()
+    } else if lower.starts_with("vulkan") || lower.starts_with("vk") {
+        "Vulkan".to_string()
+    } else if lower.starts_with("mtl") || lower.starts_with("metal") {
+        "Metal".to_string()
+    } else if lower.starts_with("hip") || lower.starts_with("rocm") {
+        "ROCm".to_string()
+    } else {
+        "GPU".to_string()
+    }
+}
+
+/// Resolves user GPU settings (`use_gpu`, `gpu_backend`, `gpu_device`) into
+/// `(effective_use_gpu, effective_gpu_device_index, display_label)`.
+pub fn resolve_gpu_selection(
+    use_gpu: bool,
+    gpu_backend: &str,
+    gpu_device: i32,
+) -> (bool, i32, String) {
+    let backend_req = gpu_backend.trim().to_ascii_lowercase();
+    if !use_gpu || backend_req == "cpu" || !has_compiled_gpu_backend() {
+        return (false, 0, "CPU".to_string());
+    }
+
+    let devices = list_gpu_devices();
+    if devices.is_empty() {
+        // If runtime enumeration found no devices yet, still allow compiled backend attempt on index 0
+        if let Some(compiled) = compiled_gpu_backend_label() {
+            return (true, gpu_device.max(0), compiled.to_string());
+        }
+        return (false, 0, "CPU".to_string());
+    }
+
+    // Filter by requested backend if user explicitly selected "cuda", "vulkan", "metal", or "rocm"
+    let chosen = if backend_req != "auto" && !backend_req.is_empty() {
+        devices
+            .iter()
+            .find(|d| {
+                d.index == gpu_device && d.backend.to_ascii_lowercase().contains(&backend_req)
+            })
+            .or_else(|| {
+                devices
+                    .iter()
+                    .find(|d| d.backend.to_ascii_lowercase().contains(&backend_req))
+            })
+            .or_else(|| devices.iter().find(|d| d.index == gpu_device))
+            .unwrap_or(&devices[0])
+    } else {
+        devices
+            .iter()
+            .find(|d| d.index == gpu_device)
+            .unwrap_or(&devices[0])
+    };
+
+    let label = if !chosen.description.is_empty()
+        && !chosen.description.eq_ignore_ascii_case(&chosen.backend)
+    {
+        format!("{} ({} GPU)", chosen.description, chosen.backend)
+    } else {
+        format!("{} GPU", chosen.backend)
+    };
+
+    (true, chosen.index, label)
+}
+
 /// Returns the human-readable default Whisper execution backend (`Metal GPU`, `CUDA GPU`, `Vulkan GPU`, `ROCm GPU`, or `CPU`).
 pub const fn active_whisper_backend_label() -> &'static str {
     match compiled_gpu_backend_label() {
         Some(gpu) => gpu,
         None => "CPU",
     }
+}
+
+/// Returns a rich hardware label including the detected GPU card model when available (e.g., `NVIDIA GeForce RTX 5060 (Vulkan GPU)`).
+pub fn active_hardware_summary(use_gpu: bool, gpu_backend: &str, gpu_device: i32) -> String {
+    let (_, _, label) = resolve_gpu_selection(use_gpu, gpu_backend, gpu_device);
+    label
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +403,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
             id: "qwen3_asr".to_string(),
             name: "Qwen3-ASR-1.7B".to_string(),
             provider: "Alibaba Cloud".to_string(),
-            description: "Modèle SOTA ultra-précis. Exécutable 100% en local sur votre Mac via Speaches (http://127.0.0.1:8000) ou vLLM.".to_string(),
+            description: "Modèle SOTA ultra-précis. Exécutable 100% en local sur votre machine via Speaches (http://127.0.0.1:8000) ou vLLM.".to_string(),
             default_engine: "remote_api".to_string(),
             default_model_name: "Qwen/Qwen3-ASR-1.7B".to_string(),
             default_api_url: "http://127.0.0.1:8000/v1/audio/transcriptions".to_string(),
@@ -379,4 +562,3 @@ pub fn is_model_installed(model: &ModelMetadata) -> bool {
         model.file_size_mb,
     )
 }
-

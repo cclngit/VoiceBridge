@@ -1,9 +1,9 @@
 [package]
 name = "VoiceBridge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 build = "build.rs"
-description = "VoiceBridge — Real-time Speech-to-Text-to-Translate pipeline with local Metal GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
+description = "VoiceBridge — Real-time Speech-to-Text-to-Translate pipeline with local Metal/CUDA/Vulkan GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
 readme = "README.md"
 license = "MIT"
 keywords = ["speech-to-text", "whisper", "translation", "obs", "gpui"]
@@ -35,10 +35,10 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 urlencoding = "2.1.3"
 gpui-kit = "0.8.1"
-whisper-rs = "0.16.0"
+whisper-rs = { version = "0.16.0", features = ["raw-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.16.0", features = ["metal"] }
+whisper-rs = { version = "0.16.0", features = ["metal", "raw-api"] }
 
 [build-dependencies]
 embed-resource = "3.0.12"

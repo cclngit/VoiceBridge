@@ -92,11 +92,34 @@ async fn update_config_handler(
     new_config.stt.language = chosen_source_lang.clone();
     new_config.translation.source_lang = chosen_source_lang.clone();
 
+    let hw_changed = {
+        let old = state.config.read().await;
+        old.stt.use_gpu != new_config.stt.use_gpu
+            || old.stt.gpu_backend != new_config.stt.gpu_backend
+            || old.stt.gpu_device != new_config.stt.gpu_device
+            || old.stt.flash_attn != new_config.stt.flash_attn
+    };
+
     // Immediately update live Whisper engine in memory
     {
         let mut engine = state.whisper_engine.lock().await;
         engine.set_language(&chosen_source_lang);
-        tracing::info!("Whisper STT language updated to '{}'", chosen_source_lang);
+        engine.set_n_threads(new_config.stt.n_threads);
+        if hw_changed {
+            let _ = engine.apply_hardware_settings(
+                new_config.stt.use_gpu,
+                &new_config.stt.gpu_backend,
+                new_config.stt.gpu_device,
+                new_config.stt.flash_attn,
+                new_config.stt.n_threads,
+            );
+        }
+        tracing::info!("Whisper STT config updated (lang='{}', use_gpu={}, backend='{}', device={})",
+            chosen_source_lang,
+            new_config.stt.use_gpu,
+            new_config.stt.gpu_backend,
+            new_config.stt.gpu_device
+        );
     }
 
     {
@@ -182,10 +205,12 @@ async fn switch_model_handler(
         let model_path = model.default_model_name.clone();
 
         if is_model_installed(&model) {
-            // Already installed: hot reload directly on Metal GPU
+            // Already installed: hot reload directly on configured GPU/CPU
             let mut engine = state.whisper_engine.lock().await;
             match engine.reload_model(&model_path) {
                 Ok(_) => {
+                    let active_hw = engine.active_hardware_label().to_string();
+                    drop(engine);
                     let mut cfg = state.config.write().await;
                     cfg.stt.engine_type = "whisper_local".to_string();
                     cfg.stt.model_id = payload.model_id.clone();
@@ -202,7 +227,7 @@ async fn switch_model_handler(
                         message: format!(
                             "{} activé ({}).",
                             model.name,
-                            crate::stt::active_whisper_backend_label()
+                            active_hw
                         ),
                         model_id: payload.model_id,
                     });
@@ -361,12 +386,14 @@ async fn test_stt_handler(
 ) -> Json<TestSttResponse> {
     let cfg = state.config.read().await.clone();
     if cfg.stt.engine_type == "whisper_local" {
+        let hw = crate::stt::active_hardware_summary(
+            cfg.stt.use_gpu,
+            &cfg.stt.gpu_backend,
+            cfg.stt.gpu_device,
+        );
         return Json(TestSttResponse {
             success: true,
-            message: format!(
-                "Whisper local ({}) est actif et prêt.",
-                crate::stt::active_whisper_backend_label()
-            ),
+            message: format!("Whisper local ({}) est actif et prêt.", hw),
         });
     }
 
@@ -406,4 +433,3 @@ async fn sse_handler(
 
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
-

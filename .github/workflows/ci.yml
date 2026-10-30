@@ -7,6 +7,17 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      windows_gpu_backend:
+        description: "Backend GPU pour Windows x86_64 (vulkan = universel NVIDIA/AMD/Intel sans DLL externe, cuda = NVIDIA CUDA, cuda,vulkan = les deux, cpu = processeur uniquement)"
+        required: false
+        default: "vulkan"
+        type: choice
+        options:
+          - vulkan
+          - cuda
+          - cuda,vulkan
+          - cpu
 
 permissions:
   contents: write
@@ -31,6 +42,7 @@ jobs:
             artifact: VoiceBridge-macos-arm64
             target: aarch64-apple-darwin
             universal_macos: false
+            cargo_features: ""
             bin: VoiceBridge
             pkg_glob: dist/VoiceBridge-macos-arm64.dmg
 
@@ -39,16 +51,18 @@ jobs:
             artifact: VoiceBridge-macos-universal
             target: universal-apple-darwin
             universal_macos: true
+            cargo_features: ""
             bin: VoiceBridge
             pkg_glob: dist/VoiceBridge-macos-universal.dmg
 
           # ── Linux (.deb Debian/Ubuntu Packages via dpkg-deb) ────────
           - os: ubuntu-24.04
-            label: Linux x86_64 (.deb amd64)
+            label: Linux x86_64 (.deb amd64 — GPU Vulkan)
             artifact: VoiceBridge-linux-amd64
             target: x86_64-unknown-linux-gnu
             deb_arch: amd64
             universal_macos: false
+            cargo_features: "--features vulkan"
             bin: VoiceBridge
             pkg_glob: dist/VoiceBridge-linux-amd64.deb
 
@@ -58,16 +72,18 @@ jobs:
             target: aarch64-unknown-linux-gnu
             deb_arch: arm64
             universal_macos: false
+            cargo_features: ""
             bin: VoiceBridge
             pkg_glob: dist/VoiceBridge-linux-arm64.deb
 
           # ── Windows (.exe Inno Setup Installer & Standalone .exe) ───
           - os: windows-latest
-            label: Windows x86_64 (.exe Setup & Portable)
+            label: Windows x86_64 (.exe Setup & Portable — GPU NVIDIA / Vulkan / CUDA)
             artifact: VoiceBridge-windows-x86_64
             target: x86_64-pc-windows-msvc
             inno_arch: x64compatible
             universal_macos: false
+            cargo_features: "--features vulkan"
             bin: VoiceBridge.exe
             pkg_glob: dist/VoiceBridge-windows-x86_64*.exe
 
@@ -77,6 +93,7 @@ jobs:
             target: aarch64-pc-windows-msvc
             inno_arch: arm64
             universal_macos: false
+            cargo_features: ""
             bin: VoiceBridge.exe
             pkg_glob: dist/VoiceBridge-windows-arm64*.exe
 
@@ -117,11 +134,19 @@ jobs:
             libfontconfig1-dev \
             libfreetype-dev \
             libdbus-1-dev \
-            libvulkan-dev
+            libvulkan-dev \
+            glslc
 
       - name: Setup NASM on Windows x86_64 (for aws-lc-sys)
         if: matrix.target == 'x86_64-pc-windows-msvc'
         uses: ilammy/setup-nasm@v1
+
+      - name: Setup NVIDIA CUDA Toolkit on Windows x86_64 (when CUDA backend is selected)
+        if: matrix.target == 'x86_64-pc-windows-msvc' && contains(inputs.windows_gpu_backend, 'cuda')
+        uses: Jimver/cuda-toolkit@v0.2.23
+        with:
+          cuda: "12.6.3"
+          sub-packages: '["nvcc", "cublas_dev", "cudart"]'
 
       - name: Setup MSVC ARM64 Developer Environment on Windows ARM64
         if: matrix.target == 'aarch64-pc-windows-msvc'
@@ -129,7 +154,7 @@ jobs:
         with:
           arch: arm64
 
-      - name: Configure Windows SDK tools (fxc.exe, rc.exe) & architecture-matched LLVM / Clang
+      - name: Configure Windows SDK tools (fxc.exe, rc.exe), Vulkan SDK & architecture-matched LLVM / Clang
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -205,6 +230,60 @@ jobs:
                   if (-not $vsInstallDirs.Contains($_.FullName)) { $vsInstallDirs.Add($_.FullName) }
                 }
             }
+          }
+
+          # 2b. Setup portable Vulkan SDK (Vulkan-Headers + vulkan-1.lib + glslc.exe) on Windows x86_64
+          # Also create a short CARGO_TARGET_DIR junction to avoid Windows MAX_PATH (260 chars) in ggml-vulkan's vulkan-shaders-gen ExternalProject
+          $targetDir = Join-Path $PWD "target"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          $shortTarget = Join-Path ([System.IO.Path]::GetPathRoot($PWD.Path)) "vb"
+          if (-not (Test-Path $shortTarget)) {
+            cmd /c mklink /J "$shortTarget" "$targetDir" | Out-Null
+          }
+          if (Test-Path $shortTarget) {
+            echo "CARGO_TARGET_DIR=$shortTarget" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Configured short CARGO_TARGET_DIR=$shortTarget -> $targetDir"
+          }
+
+          if (-not $isArm64Target) {
+            $vkSdk = Join-Path $env:RUNNER_TEMP "VulkanSDK"
+            New-Item -ItemType Directory -Force -Path "$vkSdk\Include", "$vkSdk\Lib", "$vkSdk\Bin" | Out-Null
+
+            Write-Host "Setting up Vulkan SDK in $vkSdk..."
+            $vkHeadersTar = Join-Path $env:RUNNER_TEMP "vk-headers.tar.gz"
+            curl.exe -sSL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.309.tar.gz" -o $vkHeadersTar
+            tar.exe -xzf $vkHeadersTar -C $env:RUNNER_TEMP
+            Copy-Item -Path "$env:RUNNER_TEMP\Vulkan-Headers-1.4.309\include\*" -Destination "$vkSdk\Include" -Recurse -Force
+
+            $shadercHtml = curl.exe -sSL "https://storage.googleapis.com/shaderc/badges/build_link_windows_vs2022_amd64_release.html"
+            if ($shadercHtml -match '(https://storage\.googleapis\.com/shaderc/[^\s"'']+?)/install\.tgz') {
+              $shadercZipUrl = "$($Matches[1])/install.zip"
+              $shadercZip = Join-Path $env:RUNNER_TEMP "shaderc.zip"
+              $shadercDir = Join-Path $env:RUNNER_TEMP "shaderc"
+              curl.exe -sSL $shadercZipUrl -o $shadercZip
+              Expand-Archive -Path $shadercZip -DestinationPath $shadercDir -Force
+              Copy-Item "$shadercDir\install\bin\glslc.exe" "$vkSdk\Bin\glslc.exe" -Force
+            }
+
+            # Generate vulkan-1.lib import library for x64
+            $msvcBin = $null
+            foreach ($vs in $vsInstallDirs) {
+              $cand = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64" -ErrorAction SilentlyContinue | Select-Object -Last 1
+              if ($cand) { $msvcBin = $cand.FullName; break }
+            }
+            if (-not $msvcBin) {
+              throw "Failed to locate MSVC Hostx64\x64 bin directory for lib.exe"
+            }
+
+            $vkLoaderTar = Join-Path $env:RUNNER_TEMP "vk-loader.tar.gz"
+            curl.exe -sSL "https://github.com/KhronosGroup/Vulkan-Loader/archive/refs/tags/v1.4.309.tar.gz" -o $vkLoaderTar
+            tar.exe -xzf $vkLoaderTar -C $env:RUNNER_TEMP
+            $defFile = "$env:RUNNER_TEMP\Vulkan-Loader-1.4.309\loader\vulkan-1.def"
+            & "$msvcBin\lib.exe" "/def:$defFile" "/out:$vkSdk\Lib\vulkan-1.lib" "/machine:x64" | Out-Null
+
+            echo "VULKAN_SDK=$vkSdk" | Out-File -FilePath $env:GITHUB_ENV -Append
+            echo "$vkSdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+            Write-Host "Configured VULKAN_SDK=$vkSdk"
           }
 
           # 3. Locate an architecture-matched LLVM bin directory containing libclang.dll (+ clang.exe & clang-cl.exe on ARM64)
@@ -334,20 +413,30 @@ jobs:
       - name: Cache Cargo registry and target build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.cargo_features }}
           cache-on-failure: true
 
       - name: Build release binary on Unix (single target)
         if: ${{ !matrix.universal_macos && runner.os != 'Windows' }}
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
       - name: Build release binary on Windows (single target)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+          $featuresArg = "${{ matrix.cargo_features }}"
+          if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc" -and "${{ inputs.windows_gpu_backend }}" -ne "") {
+            $req = "${{ inputs.windows_gpu_backend }}"
+            if ($req -eq "cpu") {
+              $featuresArg = ""
+            } else {
+              $featuresArg = "--features $req"
+            }
+          }
+          Write-Host "Building ${{ matrix.target }} with features: '$featuresArg'"
           Remove-Item "target\${{ matrix.target }}\release\build\whisper-rs-sys-*\out\build\CMakeCache.txt" -ErrorAction SilentlyContinue
-          cmd /c "cargo build --release --locked --target ${{ matrix.target }} > build.log 2>&1"
+          cmd /c "cargo build --release --locked --target ${{ matrix.target }} $featuresArg > build.log 2>&1"
           $code = $LASTEXITCODE
           Get-Content build.log
           if ($code -ne 0) {
@@ -380,7 +469,7 @@ jobs:
 
       - name: Run unit tests
         if: ${{ !matrix.universal_macos }}
-        run: cargo test --release --locked --target ${{ matrix.target }}
+        run: cargo test --release --locked --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
       - name: Smoke test CLI on Unix (--help)
         if: runner.os != 'Windows'

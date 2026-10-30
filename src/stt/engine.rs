@@ -19,7 +19,7 @@ pub struct TranscriptionResult {
 }
 
 struct WhisperInner {
-    // Field order matters: `state` must drop before `_ctx` so Metal buffers & residency sets
+    // Field order matters: `state` must drop before `_ctx` so Metal/CUDA/Vulkan buffers & residency sets
     // owned by the state and context are released in strict reverse-creation order.
     state: WhisperState,
     #[allow(dead_code)]
@@ -31,7 +31,13 @@ pub struct WhisperEngine {
     shutting_down: bool,
     language: String,
     n_threads: i32,
+    model_path: String,
     model_name: String,
+    use_gpu: bool,
+    gpu_backend: String,
+    gpu_device: i32,
+    flash_attn: bool,
+    active_hw_label: String,
 }
 
 unsafe impl Send for WhisperEngine {}
@@ -71,20 +77,15 @@ pub fn register_atexit_whisper_cleanup(engine: &Arc<tokio::sync::Mutex<WhisperEn
     });
 }
 
-fn format_whisper_display_name(path_str: &str, gpu_active: bool) -> String {
-    let active_backend = if gpu_active {
-        crate::stt::compiled_gpu_backend_label().unwrap_or("CPU")
-    } else {
-        "CPU"
-    };
+fn format_whisper_display_name(path_str: &str, active_backend_label: &str) -> String {
     if let Some(meta) = crate::stt::find_model_by_path(path_str) {
         let default_hw = crate::stt::active_whisper_backend_label();
-        if default_hw == active_backend {
+        if default_hw == active_backend_label {
             meta.name
         } else {
             meta.name.replace(
                 &format!("({})", default_hw),
-                &format!("({})", active_backend),
+                &format!("({})", active_backend_label),
             )
         }
     } else {
@@ -92,20 +93,37 @@ fn format_whisper_display_name(path_str: &str, gpu_active: bool) -> String {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Whisper");
-        format!("{} ({})", stem, active_backend)
+        format!("{} ({})", stem, active_backend_label)
     }
 }
 
 impl WhisperEngine {
+    #[allow(dead_code)]
     pub fn new<P: AsRef<Path>>(
         model_path: P,
         language: &str,
         n_threads: usize,
         use_gpu: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let effective_gpu = use_gpu && crate::stt::has_compiled_gpu_backend();
+        Self::new_with_gpu_options(model_path, language, n_threads, use_gpu, "auto", 0, false)
+    }
+
+    pub fn new_with_gpu_options<P: AsRef<Path>>(
+        model_path: P,
+        language: &str,
+        n_threads: usize,
+        use_gpu: bool,
+        gpu_backend: &str,
+        gpu_device: i32,
+        flash_attn: bool,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (effective_gpu, effective_dev, resolved_label) =
+            crate::stt::resolve_gpu_selection(use_gpu, gpu_backend, gpu_device);
+
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(effective_gpu);
+        ctx_params.gpu_device(effective_dev);
+        ctx_params.flash_attn(effective_gpu && flash_attn);
 
         let path_str = model_path
             .as_ref()
@@ -113,13 +131,22 @@ impl WhisperEngine {
             .ok_or_else(|| "Invalid model path")?;
 
         tracing::info!(
-            "Loading Whisper model from '{}' (Backend: {}, GPU enabled: {})...",
+            "Loading Whisper model from '{}' (Target: {}, GPU enabled: {}, device: {}, flash_attn: {})...",
             path_str,
-            crate::stt::active_whisper_backend_label(),
-            effective_gpu
+            resolved_label,
+            effective_gpu,
+            effective_dev,
+            effective_gpu && flash_attn
         );
-        let (ctx, gpu_active) = match WhisperContext::new_with_params(path_str, ctx_params) {
-            Ok(c) => (c, effective_gpu),
+        let (ctx, active_hw_label) = match WhisperContext::new_with_params(path_str, ctx_params) {
+            Ok(c) => (
+                c,
+                if effective_gpu {
+                    resolved_label
+                } else {
+                    "CPU".to_string()
+                },
+            ),
             Err(e) => {
                 if effective_gpu {
                     tracing::warn!("GPU initialization failed ({:?}), falling back to CPU mode...", e);
@@ -127,7 +154,7 @@ impl WhisperEngine {
                     cpu_params.use_gpu(false);
                     let c = WhisperContext::new_with_params(path_str, cpu_params)
                         .map_err(|e2| format!("Failed to create Whisper context on CPU: {:?}", e2))?;
-                    (c, false)
+                    (c, "CPU".to_string())
                 } else {
                     return Err(format!("Failed to create Whisper context: {:?}", e).into());
                 }
@@ -138,7 +165,7 @@ impl WhisperEngine {
             .create_state()
             .map_err(|e| format!("Failed to create Whisper state: {:?}", e))?;
 
-        let display_name = format_whisper_display_name(path_str, gpu_active);
+        let display_name = format_whisper_display_name(path_str, &active_hw_label);
         tracing::info!("Whisper model '{}' initialized successfully.", display_name);
 
         Ok(Self {
@@ -146,8 +173,23 @@ impl WhisperEngine {
             shutting_down: false,
             language: language.to_string(),
             n_threads: n_threads.max(1) as i32,
+            model_path: path_str.to_string(),
             model_name: display_name,
+            use_gpu,
+            gpu_backend: gpu_backend.to_string(),
+            gpu_device,
+            flash_attn,
+            active_hw_label,
         })
+    }
+
+    pub fn active_hardware_label(&self) -> &str {
+        &self.active_hw_label
+    }
+
+    #[allow(dead_code)]
+    pub fn model_path(&self) -> &str {
+        &self.model_path
     }
 
     /// Explicitly deallocate Whisper state and GPU resources before process exit.
@@ -162,25 +204,65 @@ impl WhisperEngine {
         self.language = language.to_string();
     }
 
+    pub fn set_n_threads(&mut self, n_threads: usize) {
+        self.n_threads = n_threads.max(1) as i32;
+    }
+
     pub fn reload_model<P: AsRef<Path>>(
         &mut self,
         model_path: P,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.reload_model_with_gpu(model_path, true)
+        let use_gpu = self.use_gpu;
+        let backend = self.gpu_backend.clone();
+        let dev = self.gpu_device;
+        let flash = self.flash_attn;
+        self.reload_model_with_gpu_options(model_path, use_gpu, &backend, dev, flash)
     }
 
+    #[allow(dead_code)]
     pub fn reload_model_with_gpu<P: AsRef<Path>>(
         &mut self,
         model_path: P,
         use_gpu: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let backend = self.gpu_backend.clone();
+        let dev = self.gpu_device;
+        let flash = self.flash_attn;
+        self.reload_model_with_gpu_options(model_path, use_gpu, &backend, dev, flash)
+    }
+
+    pub fn apply_hardware_settings(
+        &mut self,
+        use_gpu: bool,
+        gpu_backend: &str,
+        gpu_device: i32,
+        flash_attn: bool,
+        n_threads: usize,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.n_threads = n_threads.max(1) as i32;
+        let current_path = self.model_path.clone();
+        self.reload_model_with_gpu_options(&current_path, use_gpu, gpu_backend, gpu_device, flash_attn)
+    }
+
+    pub fn reload_model_with_gpu_options<P: AsRef<Path>>(
+        &mut self,
+        model_path: P,
+        use_gpu: bool,
+        gpu_backend: &str,
+        gpu_device: i32,
+        flash_attn: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.shutting_down {
             return Err("WhisperEngine is shutting down".into());
         }
 
-        let effective_gpu = use_gpu && crate::stt::has_compiled_gpu_backend();
+        let (effective_gpu, effective_dev, resolved_label) =
+            crate::stt::resolve_gpu_selection(use_gpu, gpu_backend, gpu_device);
+
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(effective_gpu);
+        ctx_params.gpu_device(effective_dev);
+        ctx_params.flash_attn(effective_gpu && flash_attn);
 
         let path_str = model_path
             .as_ref()
@@ -188,17 +270,26 @@ impl WhisperEngine {
             .ok_or_else(|| "Invalid model path")?;
 
         tracing::info!(
-            "Dynamically reloading Whisper model from '{}' (Backend: {}, GPU enabled: {})...",
+            "Dynamically reloading Whisper model from '{}' (Target: {}, GPU enabled: {}, device: {}, flash_attn: {})...",
             path_str,
-            crate::stt::active_whisper_backend_label(),
-            effective_gpu
+            resolved_label,
+            effective_gpu,
+            effective_dev,
+            effective_gpu && flash_attn
         );
 
         // Release previous context & GPU residency sets before allocating the new model
         self.inner = None;
 
-        let (ctx, gpu_active) = match WhisperContext::new_with_params(path_str, ctx_params) {
-            Ok(c) => (c, effective_gpu),
+        let (ctx, active_hw_label) = match WhisperContext::new_with_params(path_str, ctx_params) {
+            Ok(c) => (
+                c,
+                if effective_gpu {
+                    resolved_label
+                } else {
+                    "CPU".to_string()
+                },
+            ),
             Err(e) => {
                 if effective_gpu {
                     tracing::warn!("GPU reload failed ({:?}), falling back to CPU mode...", e);
@@ -206,7 +297,7 @@ impl WhisperEngine {
                     cpu_params.use_gpu(false);
                     let c = WhisperContext::new_with_params(path_str, cpu_params)
                         .map_err(|e2| format!("Failed to reload Whisper context on CPU: {:?}", e2))?;
-                    (c, false)
+                    (c, "CPU".to_string())
                 } else {
                     return Err(format!("Failed to reload Whisper context: {:?}", e).into());
                 }
@@ -218,7 +309,13 @@ impl WhisperEngine {
             .map_err(|e| format!("Failed to create Whisper state: {:?}", e))?;
 
         self.inner = Some(WhisperInner { state, _ctx: ctx });
-        self.model_name = format_whisper_display_name(path_str, gpu_active);
+        self.model_path = path_str.to_string();
+        self.use_gpu = use_gpu;
+        self.gpu_backend = gpu_backend.to_string();
+        self.gpu_device = gpu_device;
+        self.flash_attn = flash_attn;
+        self.active_hw_label = active_hw_label;
+        self.model_name = format_whisper_display_name(path_str, &self.active_hw_label);
         tracing::info!("Model '{}' reloaded successfully.", self.model_name);
         Ok(())
     }

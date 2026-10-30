@@ -1271,6 +1271,53 @@
                             Moonshine) :</span> Exécutables également à 100% en local sur votre Mac via un serveur local
                         ultra-rapide (ex: Speaches sur <code>127.0.0.1:8000</code>).
                     </div>
+                    <!-- Hardware Acceleration Selector (GPU NVIDIA / Vulkan / CUDA / Metal / CPU) -->
+                    <div style="margin-bottom: 18px; padding: 16px; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 14px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                            <div style="font-weight: 700; font-size: 0.92rem; color: #f8fafc;">
+                                ⚡ Accélération Matérielle (GPU NVIDIA / Vulkan / CUDA / Metal / CPU)
+                            </div>
+                            <span id="cfg-hw-active-pill" style="font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35);">
+                                Détection...
+                            </span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1.3fr 1.3fr 0.8fr 0.8fr; gap: 12px; align-items: end;">
+                            <div>
+                                <label class="form-label" style="font-size: 0.76rem;">Mode d'exécution</label>
+                                <select class="form-select" id="cfg-gpu-backend">
+                                    <option value="auto">⚡ Auto (GPU Prioritaire)</option>
+                                    <option value="vulkan">🔥 Vulkan GPU (NVIDIA / AMD / Intel)</option>
+                                    <option value="cuda">🟢 NVIDIA CUDA GPU</option>
+                                    <option value="metal">🍎 Apple Metal GPU</option>
+                                    <option value="cpu">🖥️ CPU Uniquement (Multithread)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size: 0.76rem;">Carte Graphique (GPU)</label>
+                                <select class="form-select" id="cfg-gpu-device">
+                                    <option value="0">GPU #0 (Par défaut)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size: 0.76rem;">Threads CPU</label>
+                                <select class="form-select" id="cfg-cpu-threads">
+                                    <option value="2">2 Threads</option>
+                                    <option value="4">4 Threads</option>
+                                    <option value="8">8 Threads</option>
+                                    <option value="12">12 Threads</option>
+                                    <option value="16">16 Threads</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size: 0.76rem;">Flash Attention</label>
+                                <select class="form-select" id="cfg-flash-attn">
+                                    <option value="false">Standard</option>
+                                    <option value="true">⚡ Activé (GPU)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="models-deck-grid" id="models-deck-grid">
                         <!-- Loaded dynamically -->
                     </div>
@@ -1858,7 +1905,24 @@
                     currentVolume = data.current_volume;
                     updateMicState(data.is_recording);
 
+                                        if (Array.isArray(data.gpu_devices) && data.gpu_devices.length > 0) {
+                        const gpuSel = document.getElementById('cfg-gpu-device');
+                        if (gpuSel && gpuSel.options.length !== data.gpu_devices.length) {
+                            const prevVal = gpuSel.value;
+                            gpuSel.innerHTML = '';
+                            data.gpu_devices.forEach(g => {
+                                const opt = document.createElement('option');
+                                opt.value = String(g.index);
+                                const vramGb = (g.vram_total_mb / 1024).toFixed(1);
+                                opt.textContent = `GPU #${g.index}: ${g.description} [${g.backend}] (${vramGb} Go)`;
+                                gpuSel.appendChild(opt);
+                            });
+                            gpuSel.value = String(data.gpu_device ?? prevVal ?? 0);
+                        }
+                    }
                     if (data.hardware_backend) {
+                        const hwPill = document.getElementById('cfg-hw-active-pill');
+                        if (hwPill) hwPill.textContent = data.hardware_backend;
                         window.activeHardwareBackend = data.hardware_backend;
                         const hwBadge = document.getElementById('header-metal-badge');
                         if (hwBadge) hwBadge.textContent = data.hardware_backend;
@@ -2011,7 +2075,18 @@
                         : (currentConfig.translation.source_lang || 'fr');
                     document.getElementById('cfg-source-lang').value = activeSrcLang;
                     document.getElementById('cfg-target-lang').value = currentConfig.translation.target_lang;
-                    document.getElementById('cfg-trans-engine').value = currentConfig.translation.engine;
+                                        document.getElementById('cfg-trans-engine').value = currentConfig.translation.engine;
+                    if (currentConfig.stt) {
+                        const backendMode = (currentConfig.stt.use_gpu === false) ? 'cpu' : (currentConfig.stt.gpu_backend || 'auto');
+                        const elBackend = document.getElementById('cfg-gpu-backend');
+                        if (elBackend) elBackend.value = backendMode;
+                        const elDev = document.getElementById('cfg-gpu-device');
+                        if (elDev && currentConfig.stt.gpu_device !== undefined) elDev.value = String(currentConfig.stt.gpu_device);
+                        const elThreads = document.getElementById('cfg-cpu-threads');
+                        if (elThreads && currentConfig.stt.threads) elThreads.value = String(currentConfig.stt.threads);
+                        const elFlash = document.getElementById('cfg-flash-attn');
+                        if (elFlash) elFlash.value = currentConfig.stt.flash_attn ? 'true' : 'false';
+                    }
 
                     document.getElementById('cfg-vad-threshold').value = currentConfig.audio.vad_threshold;
                     document.getElementById('val-vad-thresh').textContent = currentConfig.audio.vad_threshold;
@@ -2037,7 +2112,13 @@
             const chosenSourceLang = document.getElementById('cfg-source-lang').value;
             currentConfig.translation.source_lang = chosenSourceLang;
             if (!currentConfig.stt) currentConfig.stt = {};
-            currentConfig.stt.language = chosenSourceLang;
+                        currentConfig.stt.language = chosenSourceLang;
+            const chosenBackend = document.getElementById('cfg-gpu-backend')?.value || 'auto';
+            currentConfig.stt.use_gpu = (chosenBackend !== 'cpu');
+            currentConfig.stt.gpu_backend = chosenBackend;
+            currentConfig.stt.gpu_device = parseInt(document.getElementById('cfg-gpu-device')?.value || '0', 10);
+            currentConfig.stt.threads = parseInt(document.getElementById('cfg-cpu-threads')?.value || '4', 10);
+            currentConfig.stt.flash_attn = (document.getElementById('cfg-flash-attn')?.value === 'true');
 
             currentConfig.translation.target_lang = document.getElementById('cfg-target-lang').value;
             currentConfig.translation.engine = document.getElementById('cfg-trans-engine').value;

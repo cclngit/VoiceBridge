@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::stt::{DownloadStatus, WhisperEngine};
+use crate::stt::{DownloadStatus, GpuDeviceInfo, WhisperEngine};
 use crate::translate::TranslationService;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,12 @@ pub struct SystemStatus {
     pub download_speed_mb_s: f32,
     pub active_model_id: String,
     pub hardware_backend: String,
+    pub use_gpu: bool,
+    pub gpu_backend: String,
+    pub gpu_device: i32,
+    pub flash_attn: bool,
+    pub gpu_devices: Vec<GpuDeviceInfo>,
+    pub compiled_gpu_backends: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -108,8 +114,8 @@ impl AppState {
         }
     }
 
-    /// Synchronously stops audio ingestion, waits for any in-flight Metal inference to finish,
-    /// and deallocates Whisper Metal GPU residency sets before AppKit / C `exit()` runs.
+    /// Synchronously stops audio ingestion, waits for any in-flight GPU inference to finish,
+    /// and deallocates Whisper GPU residency sets before AppKit / C `exit()` runs.
     pub fn shutdown_sync(&self) {
         self.is_shutting_down.store(true, Ordering::SeqCst);
         self.is_recording.store(false, Ordering::SeqCst);
@@ -140,6 +146,11 @@ impl AppState {
         let history = self.history.read().await;
         let cfg = self.config.read().await;
         let dl = self.download_status.read().await;
+        let hw_label = crate::stt::active_hardware_summary(
+            cfg.stt.use_gpu,
+            &cfg.stt.gpu_backend,
+            cfg.stt.gpu_device,
+        );
 
         SystemStatus {
             is_recording: self.is_recording.load(Ordering::Relaxed),
@@ -155,8 +166,16 @@ impl AppState {
             download_message: dl.status_message.clone(),
             download_speed_mb_s: dl.speed_mb_s,
             active_model_id: cfg.stt.model_id.clone(),
-            hardware_backend: crate::stt::active_whisper_backend_label().to_string(),
+            hardware_backend: hw_label,
+            use_gpu: cfg.stt.use_gpu,
+            gpu_backend: cfg.stt.gpu_backend.clone(),
+            gpu_device: cfg.stt.gpu_device,
+            flash_attn: cfg.stt.flash_attn,
+            gpu_devices: crate::stt::list_gpu_devices(),
+            compiled_gpu_backends: crate::stt::compiled_gpu_backends()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
-

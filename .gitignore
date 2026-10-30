@@ -1,6 +1,11 @@
 # Rust & package artifacts
 /target/
 /dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
 **/*.rs.bk
 
 # Whisper GGML models

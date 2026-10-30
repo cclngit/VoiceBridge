@@ -103,6 +103,12 @@ pub struct SttConfig {
     pub language: String,
     pub n_threads: usize,
     pub use_gpu: bool,
+    #[serde(default = "default_gpu_backend")]
+    pub gpu_backend: String, // "auto", "cuda", "vulkan", "metal", "rocm", "cpu"
+    #[serde(default)]
+    pub gpu_device: i32,
+    #[serde(default)]
+    pub flash_attn: bool,
     #[serde(default = "default_true")]
     pub enable_diarization: bool,
 }
@@ -118,6 +124,9 @@ fn default_model_name() -> String {
 }
 fn default_api_url() -> String {
     "http://127.0.0.1:8000/v1/audio/transcriptions".to_string()
+}
+fn default_gpu_backend() -> String {
+    "auto".to_string()
 }
 fn default_true() -> bool {
     true
@@ -136,6 +145,9 @@ impl Default for SttConfig {
             language: "auto".to_string(),
             n_threads: 4,
             use_gpu: true,
+            gpu_backend: default_gpu_backend(),
+            gpu_device: 0,
+            flash_attn: false,
             enable_diarization: true,
         }
     }

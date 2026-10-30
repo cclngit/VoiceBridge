@@ -18,6 +18,9 @@
     "language": "fr",
     "n_threads": 4,
     "use_gpu": true,
+    "gpu_backend": "auto",
+    "gpu_device": 0,
+    "flash_attn": false,
     "enable_diarization": true
   },
   "translation": {

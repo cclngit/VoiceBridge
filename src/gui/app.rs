@@ -21,7 +21,8 @@ use gpui_kit::{
 use crate::audio::AudioDeviceManager;
 use crate::server::{AppState, PipelineEvent};
 use crate::stt::{
-    download_model_with_progress, get_available_models, is_model_installed, ModelMetadata,
+    download_model_with_progress, get_available_models, is_model_installed, list_gpu_devices,
+    GpuDeviceInfo, ModelMetadata,
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -87,6 +88,14 @@ pub struct VoiceBridgeApp {
     available_devices: Vec<String>,
     selected_device: String,
 
+    // GPU / CPU Hardware Acceleration configuration
+    gpu_devices: Vec<GpuDeviceInfo>,
+    use_gpu: bool,
+    gpu_backend: String,
+    gpu_device: i32,
+    flash_attn: bool,
+    n_threads: usize,
+
     // Model configuration
     active_model_id: String,
     active_engine: String,
@@ -138,6 +147,7 @@ impl VoiceBridgeApp {
             .unwrap_or_else(|| state.audio_device.clone());
 
         let models_catalog = get_available_models();
+        let gpu_devices = list_gpu_devices();
 
         let mut app = Self {
             focus_handle: cx.focus_handle(),
@@ -157,6 +167,12 @@ impl VoiceBridgeApp {
             models_catalog,
             available_devices: devices,
             selected_device,
+            gpu_devices,
+            use_gpu: initial_cfg.stt.use_gpu,
+            gpu_backend: initial_cfg.stt.gpu_backend.clone(),
+            gpu_device: initial_cfg.stt.gpu_device,
+            flash_attn: initial_cfg.stt.flash_attn,
+            n_threads: initial_cfg.stt.n_threads.max(1),
             active_model_id,
             active_engine,
             api_url_input,
@@ -248,6 +264,60 @@ impl VoiceBridgeApp {
         .detach();
 
         app
+    }
+
+    // Apply GPU / CPU hardware acceleration changes dynamically
+    fn apply_gpu_settings(
+        &mut self,
+        use_gpu: bool,
+        gpu_backend: String,
+        gpu_device: i32,
+        flash_attn: bool,
+        n_threads: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.use_gpu = use_gpu;
+        self.gpu_backend = gpu_backend.clone();
+        self.gpu_device = gpu_device;
+        self.flash_attn = flash_attn;
+        self.n_threads = n_threads;
+        self.gpu_devices = list_gpu_devices();
+
+        let target_label = crate::stt::active_hardware_summary(use_gpu, &gpu_backend, gpu_device);
+        window.push_notification(
+            Notification::info(format!(
+                "Rechargement du moteur Whisper sur : {} ({} threads CPU)...",
+                target_label, n_threads
+            )),
+            cx,
+        );
+
+        let state = self.state.clone();
+        self.tokio_handle.spawn(async move {
+            {
+                let mut cfg = state.config.write().await;
+                cfg.stt.use_gpu = use_gpu;
+                cfg.stt.gpu_backend = gpu_backend.clone();
+                cfg.stt.gpu_device = gpu_device;
+                cfg.stt.flash_attn = flash_attn;
+                cfg.stt.n_threads = n_threads;
+                let _ = cfg.save_default();
+            }
+
+            let mut engine = state.whisper_engine.lock().await;
+            if let Err(e) = engine.apply_hardware_settings(
+                use_gpu,
+                &gpu_backend,
+                gpu_device,
+                flash_attn,
+                n_threads,
+            ) {
+                tracing::error!("Erreur lors du changement de périphérique GPU/CPU : {}", e);
+            }
+        });
+
+        cx.notify();
     }
 
     // Toggle speech capture pipeline
@@ -418,9 +488,15 @@ impl VoiceBridgeApp {
         }
 
         let state = self.state.clone();
-        let (use_gpu, lang) = {
+        let (use_gpu, gpu_backend, gpu_device, flash_attn, lang) = {
             let cfg = state.config.blocking_read();
-            (cfg.stt.use_gpu, cfg.stt.language.clone())
+            (
+                cfg.stt.use_gpu,
+                cfg.stt.gpu_backend.clone(),
+                cfg.stt.gpu_device,
+                cfg.stt.flash_attn,
+                cfg.stt.language.clone(),
+            )
         };
 
         window.push_notification(
@@ -432,7 +508,13 @@ impl VoiceBridgeApp {
             let reload_res = {
                 let mut engine = state.whisper_engine.lock().await;
                 engine.set_language(&lang);
-                engine.reload_model_with_gpu(&model_path, use_gpu)
+                engine.reload_model_with_gpu_options(
+                    &model_path,
+                    use_gpu,
+                    &gpu_backend,
+                    gpu_device,
+                    flash_attn,
+                )
             };
             match reload_res {
                 Ok(()) => {
@@ -543,9 +625,15 @@ impl VoiceBridgeApp {
             cx,
         );
 
-        let (use_gpu, lang) = {
+        let (use_gpu, gpu_backend, gpu_device, flash_attn, lang) = {
             let cfg = state.config.blocking_read();
-            (cfg.stt.use_gpu, cfg.stt.language.clone())
+            (
+                cfg.stt.use_gpu,
+                cfg.stt.gpu_backend.clone(),
+                cfg.stt.gpu_device,
+                cfg.stt.flash_attn,
+                cfg.stt.language.clone(),
+            )
         };
 
         let state_clone = state.clone();
@@ -561,7 +649,13 @@ impl VoiceBridgeApp {
                     let reload_res = {
                         let mut engine = state_clone.whisper_engine.lock().await;
                         engine.set_language(&lang);
-                        engine.reload_model_with_gpu(&path_clone, use_gpu)
+                        engine.reload_model_with_gpu_options(
+                            &path_clone,
+                            use_gpu,
+                            &gpu_backend,
+                            gpu_device,
+                            flash_attn,
+                        )
                     };
                     if reload_res.is_ok() {
                         let mut cfg = state_clone.config.write().await;
@@ -645,7 +739,11 @@ impl VoiceBridgeApp {
         } else {
             "Whisper Large-v3-Turbo"
         };
-        let hw_label = crate::stt::active_whisper_backend_label();
+        let hw_label = crate::stt::active_hardware_summary(
+            self.use_gpu,
+            &self.gpu_backend,
+            self.gpu_device,
+        );
 
         TitleBar::new().child(
             h_flex()
@@ -1414,9 +1512,37 @@ impl VoiceBridgeApp {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // TAB: MODÈLES (CATALOG, WHISPER LOCAL & REMOTE SPEACHES)
+    // TAB: MODÈLES (CATALOG, GPU/CPU HARDWARE & REMOTE SPEACHES)
     // ═══════════════════════════════════════════════════════════════
     fn render_modeles_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active_hw_summary = crate::stt::active_hardware_summary(
+            self.use_gpu,
+            &self.gpu_backend,
+            self.gpu_device,
+        );
+        let cur_backend = if !self.use_gpu {
+            "cpu".to_string()
+        } else {
+            self.gpu_backend.to_ascii_lowercase()
+        };
+        let cur_dev = self.gpu_device;
+        let cur_flash = self.flash_attn;
+        let cur_threads = self.n_threads;
+
+        #[cfg(target_os = "macos")]
+        let backend_options: &[(&str, &str, &str)] = &[
+            ("auto", "Auto (GPU Recommandé)", "Sélectionne automatiquement Metal GPU"),
+            ("metal", "Apple Metal GPU", "Accélération matérielle unifiée Apple Silicon"),
+            ("cpu", "CPU Uniquement", "Exécution multithread sur processeur"),
+        ];
+        #[cfg(not(target_os = "macos"))]
+        let backend_options: &[(&str, &str, &str)] = &[
+            ("auto", "Auto (GPU Recommandé)", "Détecte automatiquement votre GPU NVIDIA / AMD / Intel"),
+            ("vulkan", "Vulkan GPU (NVIDIA / AMD)", "Accélération GPU universelle directe sans CUDA externe"),
+            ("cuda", "NVIDIA CUDA GPU", "Kernels CUDA natifs dédiés aux cartes NVIDIA GeForce / RTX"),
+            ("cpu", "CPU Uniquement", "Force le calcul multithread sur processeur"),
+        ];
+
         v_flex()
             .size_full()
             .p_6()
@@ -1433,7 +1559,7 @@ impl VoiceBridgeApp {
                         h_flex()
                             .gap_4()
                             .child(
-                                // Whisper Local Metal GPU Card
+                                // Whisper Local GPU/CPU Card
                                 v_flex()
                                     .id("card-whisper-local")
                                     .flex_1()
@@ -1465,11 +1591,7 @@ impl VoiceBridgeApp {
                                             .items_center()
                                             .child(
                                                 div().text_sm().font_semibold().text_color(TEXT_MAIN).child(
-                                                    if let Some(gpu_label) = crate::stt::compiled_gpu_backend_label() {
-                                                        format!("Whisper Local ({} & CPU)", gpu_label)
-                                                    } else {
-                                                        "Whisper Local (CPU Multithread)".to_string()
-                                                    },
+                                                    format!("Whisper Local ({})", active_hw_summary),
                                                 ),
                                             )
                                             .child(
@@ -1481,7 +1603,7 @@ impl VoiceBridgeApp {
                                             ),
                                     )
                                     .child(
-                                        div().text_xs().text_color(TEXT_MUTED).child("100% Hors-ligne, ultra-rapide sur Metal GPU / CUDA / Vulkan / CPU multithread (Serveur ASR coupé)."),
+                                        div().text_xs().text_color(TEXT_MUTED).child("100% Hors-ligne, ultra-rapide sur NVIDIA GPU (Vulkan / CUDA), Metal GPU ou CPU multithread."),
                                     ),
                             )
                             .child(
@@ -1531,6 +1653,315 @@ impl VoiceBridgeApp {
                                     .child(
                                         div().text_xs().text_color(TEXT_MUTED).child("Serveur ASR local haute performance (Faster-Whisper, Qwen, Voxtral, Moonshine)."),
                                     ),
+                            ),
+                    ),
+            )
+            .child(
+                // Section 1.5: Accélération Matérielle (GPU NVIDIA / Vulkan / CUDA / Metal / CPU)
+                v_flex()
+                    .p_5()
+                    .rounded(px(14.))
+                    .bg(BG_CARD)
+                    .border_1()
+                    .border_color(BORDER_DARK)
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .text_color(TEXT_MAIN)
+                                            .child("Accélération Matérielle (GPU NVIDIA / Vulkan / CUDA / CPU)"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(TEXT_MUTED)
+                                            .child("Choisissez le backend matériel, la carte graphique dédiée et les options d'inférence locale."),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(px(8.))
+                                    .bg(if self.use_gpu && crate::stt::has_compiled_gpu_backend() {
+                                        rgba_hex(0x143322)
+                                    } else {
+                                        rgba_hex(0x26262c)
+                                    })
+                                    .border_1()
+                                    .border_color(if self.use_gpu && crate::stt::has_compiled_gpu_backend() {
+                                        ACCENT_GREEN
+                                    } else {
+                                        BORDER_DARK
+                                    })
+                                    .text_xs()
+                                    .font_bold()
+                                    .text_color(if self.use_gpu && crate::stt::has_compiled_gpu_backend() {
+                                        ACCENT_GREEN
+                                    } else {
+                                        TEXT_BODY
+                                    })
+                                    .child(format!("Actif : {}", active_hw_summary)),
+                            ),
+                    )
+                    .child(
+                        // Row 1: Backend Mode Selector
+                        h_flex()
+                            .gap_3()
+                            .children(backend_options.iter().map(|(val, title, hint)| {
+                                let is_sel = cur_backend == *val;
+                                let val_str = (*val).to_string();
+                                div()
+                                    .flex_1()
+                                    .id(SharedString::from(format!("gpu-backend-{}", val)))
+                                    .cursor_pointer()
+                                    .p_3()
+                                    .rounded(px(8.))
+                                    .map(|this| {
+                                        if is_sel {
+                                            this.bg(rgba_hex(0x1e3a5f)).border_1().border_color(ACCENT_CYAN)
+                                        } else {
+                                            this.bg(rgba_hex(0x1a1a1e)).border_1().border_color(BORDER_SUBTLE).hover(|s| s.bg(BG_CARD_HOVER))
+                                        }
+                                    })
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        let next_use_gpu = val_str != "cpu";
+                                        this.apply_gpu_settings(
+                                            next_use_gpu,
+                                            val_str.clone(),
+                                            cur_dev,
+                                            cur_flash,
+                                            cur_threads,
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(if is_sel { ACCENT_CYAN } else { TEXT_MAIN })
+                                                    .child(*title),
+                                            )
+                                            .child(div().text_xs().text_color(TEXT_MUTED).child(*hint)),
+                                    )
+                            })),
+                    )
+                    .when(!self.gpu_devices.is_empty(), |this| {
+                        this.child(
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(TEXT_BODY)
+                                        .child("Carte(s) Graphique(s) Détectée(s) :"),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_3()
+                                        .children(self.gpu_devices.iter().map(|gpu| {
+                                            let is_sel = self.use_gpu && self.gpu_device == gpu.index;
+                                            let idx = gpu.index;
+                                            let backend_lower = gpu.backend.to_ascii_lowercase();
+                                            let vram_str = if gpu.vram_total_mb > 0 {
+                                                format!(
+                                                    "{} Mo libres / {} Mo VRAM",
+                                                    gpu.vram_free_mb, gpu.vram_total_mb
+                                                )
+                                            } else {
+                                                format!("Périphérique #{} ({})", gpu.index, gpu.dev_name)
+                                            };
+                                            div()
+                                                .flex_1()
+                                                .id(SharedString::from(format!("gpu-dev-{}", idx)))
+                                                .cursor_pointer()
+                                                .p_3()
+                                                .rounded(px(8.))
+                                                .map(|el| {
+                                                    if is_sel {
+                                                        el.bg(rgba_hex(0x163520)).border_1().border_color(ACCENT_GREEN)
+                                                    } else {
+                                                        el.bg(rgba_hex(0x1a1a1e)).border_1().border_color(BORDER_SUBTLE).hover(|s| s.bg(BG_CARD_HOVER))
+                                                    }
+                                                })
+                                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                    let next_backend = if this.gpu_backend == "cpu" {
+                                                        backend_lower.clone()
+                                                    } else {
+                                                        this.gpu_backend.clone()
+                                                    };
+                                                    this.apply_gpu_settings(
+                                                        true,
+                                                        next_backend,
+                                                        idx,
+                                                        cur_flash,
+                                                        cur_threads,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }))
+                                                .child(
+                                                    h_flex()
+                                                        .justify_between()
+                                                        .items_center()
+                                                        .child(
+                                                            v_flex()
+                                                                .gap_0p5()
+                                                                .child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .font_semibold()
+                                                                        .text_color(if is_sel { ACCENT_GREEN } else { TEXT_MAIN })
+                                                                        .child(format!(
+                                                                            "GPU #{}: {} ({})",
+                                                                            gpu.index, gpu.description, gpu.backend
+                                                                        )),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .text_color(TEXT_MUTED)
+                                                                        .child(vram_str),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            if is_sel {
+                                                                div()
+                                                                    .px_2()
+                                                                    .py_0p5()
+                                                                    .rounded(px(6.))
+                                                                    .bg(rgba_hex(0x166534))
+                                                                    .text_xs()
+                                                                    .text_color(rgba_hex(0xbbf7d0))
+                                                                    .child("Sélectionné")
+                                                            } else {
+                                                                div()
+                                                            },
+                                                        ),
+                                                )
+                                        })),
+                                ),
+                        )
+                    })
+                    .child(
+                        // Row 3: Flash Attention & CPU Threads
+                        h_flex()
+                            .gap_4()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                // Flash Attention Toggle
+                                div()
+                                    .id("btn-toggle-flash-attn")
+                                    .cursor_pointer()
+                                    .px_3p5()
+                                    .py_2()
+                                    .rounded(px(8.))
+                                    .map(|this| {
+                                        if self.flash_attn {
+                                            this.bg(rgba_hex(0x1e3a5f)).border_1().border_color(ACCENT_CYAN)
+                                        } else {
+                                            this.bg(rgba_hex(0x1a1a1e)).border_1().border_color(BORDER_SUBTLE).hover(|s| s.bg(BG_CARD_HOVER))
+                                        }
+                                    })
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        let next_flash = !this.flash_attn;
+                                        let use_gpu = this.use_gpu;
+                                        let backend = this.gpu_backend.clone();
+                                        this.apply_gpu_settings(
+                                            use_gpu,
+                                            backend,
+                                            cur_dev,
+                                            next_flash,
+                                            cur_threads,
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .size(px(8.))
+                                                    .rounded_full()
+                                                    .bg(if self.flash_attn { ACCENT_CYAN } else { rgba_hex(0x6b7280) }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(if self.flash_attn { ACCENT_CYAN } else { TEXT_BODY })
+                                                    .child(if self.flash_attn {
+                                                        "⚡ Flash Attention GPU : Activé"
+                                                    } else {
+                                                        "⚡ Flash Attention GPU : Désactivé"
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                // CPU Threads Selector
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(TEXT_MUTED)
+                                            .child("Threads CPU :"),
+                                    )
+                                    .children([2usize, 4, 8, 12, 16].into_iter().map(|th| {
+                                        let is_sel = self.n_threads == th;
+                                        div()
+                                            .id(SharedString::from(format!("cpu-threads-{}", th)))
+                                            .cursor_pointer()
+                                            .px_2p5()
+                                            .py_1()
+                                            .rounded(px(6.))
+                                            .map(|this| {
+                                                if is_sel {
+                                                    this.bg(rgba_hex(0x1e3a5f)).border_1().border_color(ACCENT_CYAN)
+                                                } else {
+                                                    this.bg(rgba_hex(0x1a1a1e)).border_1().border_color(BORDER_SUBTLE).hover(|s| s.bg(BG_CARD_HOVER))
+                                                }
+                                            })
+                                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                let use_gpu = this.use_gpu;
+                                                let backend = this.gpu_backend.clone();
+                                                this.apply_gpu_settings(
+                                                    use_gpu,
+                                                    backend,
+                                                    cur_dev,
+                                                    cur_flash,
+                                                    th,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_bold()
+                                                    .text_color(if is_sel { ACCENT_CYAN } else { TEXT_BODY })
+                                                    .child(format!("{}", th)),
+                                            )
+                                    })),
                             ),
                     ),
             )
@@ -1658,7 +2089,7 @@ impl VoiceBridgeApp {
                                 } else {
                                     div().text_xs().text_color(TEXT_MUTED).child(format!(
                                         "Activation automatique du serveur ASR ou du moteur {}",
-                                        crate::stt::active_whisper_backend_label()
+                                        active_hw_summary
                                     ))
                                 },
                             ),
@@ -2382,6 +2813,11 @@ impl VoiceBridgeApp {
     // ═══════════════════════════════════════════════════════════════
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let port = self.state.config.blocking_read().server.port;
+        let hw_label = crate::stt::active_hardware_summary(
+            self.use_gpu,
+            &self.gpu_backend,
+            self.gpu_device,
+        );
 
         h_flex()
             .w_full()
@@ -2402,7 +2838,7 @@ impl VoiceBridgeApp {
                             .text_xs()
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(TEXT_DIM)
-                            .child("CPU 4.8% GPU 80% RAM 67%"),
+                            .child(format!("{} · {} Threads CPU", hw_label, self.n_threads)),
                     ),
             )
             .child(

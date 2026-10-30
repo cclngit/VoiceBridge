@@ -43,6 +43,26 @@ struct Args {
     #[arg(short, long)]
     model: Option<String>,
 
+    /// Hardware acceleration backend (auto, cuda, vulkan, metal, rocm, cpu)
+    #[arg(long)]
+    gpu_backend: Option<String>,
+
+    /// GPU device index (0, 1, ...) when multiple GPUs are available
+    #[arg(long)]
+    gpu_device: Option<i32>,
+
+    /// Force CPU execution (disable GPU acceleration)
+    #[arg(long, default_value_t = false)]
+    no_gpu: bool,
+
+    /// Enable Flash Attention on GPU
+    #[arg(long)]
+    flash_attn: Option<bool>,
+
+    /// Number of CPU threads for Whisper inference
+    #[arg(long)]
+    threads: Option<usize>,
+
     /// Run in headless mode without native desktop GUI (web & OBS overlay only)
     #[arg(long, default_value_t = false)]
     headless: bool,
@@ -164,10 +184,52 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(model) = args.model {
         config.stt.model_path = model;
     }
+    if let Some(backend) = args.gpu_backend {
+        let lower = backend.to_ascii_lowercase();
+        if lower == "cpu" {
+            config.stt.use_gpu = false;
+            config.stt.gpu_backend = "cpu".to_string();
+        } else {
+            config.stt.use_gpu = true;
+            config.stt.gpu_backend = lower;
+        }
+    }
+    if let Some(dev_idx) = args.gpu_device {
+        config.stt.gpu_device = dev_idx.max(0);
+    }
+    if args.no_gpu {
+        config.stt.use_gpu = false;
+        config.stt.gpu_backend = "cpu".to_string();
+    }
+    if let Some(flash) = args.flash_attn {
+        config.stt.flash_attn = flash;
+    }
+    if let Some(threads) = args.threads {
+        config.stt.n_threads = threads.max(1);
+    }
 
     println!("\n╔═══════════════════════════════════════════════════════════════╗");
     println!("║       VoiceBridge — Speech To Text To Translate (Rust)    ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+    let detected_gpus = stt::list_gpu_devices();
+    if detected_gpus.is_empty() {
+        tracing::info!(
+            "Hardware backend: {} (no dedicated GPU devices detected by ggml)",
+            stt::active_whisper_backend_label()
+        );
+    } else {
+        for g in &detected_gpus {
+            tracing::info!(
+                "Detected GPU #{}: {} [{}] ({} MB free / {} MB total VRAM)",
+                g.index,
+                g.description,
+                g.backend,
+                g.vram_free_mb,
+                g.vram_total_mb
+            );
+        }
+    }
 
     // 1. Build Multi-threaded Tokio Runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -186,12 +248,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         ensure_model_exists(&config.stt.model_path, &resolved_url).await?;
 
-        let whisper_engine = Arc::new(tokio::sync::Mutex::new(WhisperEngine::new(
-            &config.stt.model_path,
-            &config.stt.language,
-            config.stt.n_threads,
-            config.stt.use_gpu,
-        )?));
+        let whisper_engine = Arc::new(tokio::sync::Mutex::new(
+            WhisperEngine::new_with_gpu_options(
+                &config.stt.model_path,
+                &config.stt.language,
+                config.stt.n_threads,
+                config.stt.use_gpu,
+                &config.stt.gpu_backend,
+                config.stt.gpu_device,
+                config.stt.flash_attn,
+            )?,
+        ));
         stt::register_atexit_whisper_cleanup(&whisper_engine);
         let remote_asr_client = Arc::new(RemoteAsrClient::new());
         let download_status = Arc::new(tokio::sync::RwLock::new(stt::DownloadStatus::default()));
