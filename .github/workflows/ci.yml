@@ -298,11 +298,13 @@ jobs:
             Write-Host "Verified clang.exe + MSVC/SDK headers for aarch64-pc-windows-msvc"
 
             # Use CC_PREFER_CLANG_CL_OVER_MSVC=1 rather than global CC=clang-cl so:
-            # - ring-0.17.14 uses clang.exe for GNU .S assembly files
             # - aws-lc-sys & cc-rs crates use clang-cl.exe
             # - whisper-rs-sys CMake+Ninja uses explicit forward-slash clang-cl.exe paths
+            # - CXXFLAGS=/EHsc restores C++ exception handling (cmake-rs overrides CMAKE_CXX_FLAGS
+            #   under Ninja, stripping CMake's default /EHsc and causing clang-cl to reject try/catch in gguf.cpp)
             $cmakeEnv = @(
               "CC_PREFER_CLANG_CL_OVER_MSVC=1",
+              "CXXFLAGS=/EHsc",
               "CMAKE_GENERATOR=Ninja",
               "CMAKE_C_COMPILER=$clangClPath",
               "CMAKE_CXX_COMPILER=$clangClPath",
@@ -344,6 +346,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+          Remove-Item "target\${{ matrix.target }}\release\build\whisper-rs-sys-*\out\build\CMakeCache.txt" -ErrorAction SilentlyContinue
           cmd /c "cargo build --release --locked --target ${{ matrix.target }} > build.log 2>&1"
           $code = $LASTEXITCODE
           Get-Content build.log
