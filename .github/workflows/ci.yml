@@ -129,54 +129,192 @@ jobs:
         with:
           arch: arm64
 
-      - name: Configure Windows LLVM / libclang & Windows ARM64 Clang-CL + Ninja
+      - name: Configure Windows SDK tools (fxc.exe, rc.exe) & architecture-matched LLVM / Clang
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $vsPath = ""
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vswhere) {
-            $vsPath = & $vswhere -latest -property installationPath
-          }
+          $ErrorActionPreference = "Stop"
 
-          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") {
-            $llvmCandidates = @(
-              "$vsPath\VC\Tools\Llvm\ARM64\bin",
-              "C:\Program Files\LLVM\bin",
-              "$vsPath\VC\Tools\Llvm\x64\bin"
-            )
-          } else {
-            $llvmCandidates = @(
-              "C:\Program Files\LLVM\bin",
-              "$vsPath\VC\Tools\Llvm\x64\bin",
-              "$vsPath\VC\Tools\Llvm\ARM64\bin"
-            )
-          }
-
-          foreach ($dir in $llvmCandidates) {
-            if ($dir -and (Test-Path (Join-Path $dir "libclang.dll"))) {
-              echo "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
-              echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Append
-              Write-Host "Configured LIBCLANG_PATH=$dir"
-              break
+          function Get-PeMachine([string]$FilePath) {
+            if (-not (Test-Path $FilePath)) { return 0 }
+            $bytes = New-Object byte[] 4096
+            $fs = [System.IO.File]::OpenRead($FilePath)
+            try {
+              $read = $fs.Read($bytes, 0, $bytes.Length)
+              if ($read -lt 64) { return 0 }
+              $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+              if ($peOffset -lt 0 -or ($peOffset + 6) -gt $read) { return 0 }
+              return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            } finally {
+              $fs.Close()
             }
           }
 
-          # whisper.cpp / ggml and aws-lc-sys require Clang (clang-cl) on Windows ARM64
-          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") {
-            if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-              $vsNinja = "$vsPath\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
-              if (Test-Path (Join-Path $vsNinja "ninja.exe")) {
-                echo "$vsNinja" | Out-File -FilePath $env:GITHUB_PATH -Append
+          $isArm64Target = ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc")
+          $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          # 0xAA64 = ARM64, 0x8664 = AMD64 (x64)
+          $expectedMachine = if ($hostArch -eq "Arm64") { 0xAA64 } else { 0x8664 }
+          Write-Host "Windows host OSArchitecture=$hostArch (expected PE machine=0x$($expectedMachine.ToString('X4'))), target=${{ matrix.target }}"
+
+          # 1. Locate Windows SDK tools explicitly (GPUI_FXC_PATH for gpui-pre-windows, RC for embed-resource)
+          $kitsBinRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $sdkArchOrder = if ($hostArch -eq "Arm64") { @("arm64", "x64") } else { @("x64", "x86") }
+
+          function Find-SdkTool([string]$ToolName) {
+            if (-not (Test-Path $kitsBinRoot)) { return $null }
+            $verDirs = Get-ChildItem -Path $kitsBinRoot -Directory -Filter "10.*" |
+              Sort-Object { [version]($_.Name -replace '[^0-9\.]', '') } -Descending
+            foreach ($archDir in $sdkArchOrder) {
+              foreach ($verDir in $verDirs) {
+                $candidate = Join-Path $verDir.FullName "$archDir\$ToolName"
+                if (Test-Path $candidate) { return $candidate }
               }
             }
-            @(
+            return $null
+          }
+
+          $fxcPath = Find-SdkTool "fxc.exe"
+          if ($fxcPath) {
+            echo "GPUI_FXC_PATH=$fxcPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Configured GPUI_FXC_PATH=$fxcPath"
+          } else {
+            throw "Failed to locate fxc.exe in $kitsBinRoot"
+          }
+
+          $rcPath = Find-SdkTool "rc.exe"
+          if ($rcPath) {
+            echo "RC=$rcPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Configured RC=$rcPath"
+          }
+
+          $mtPath = Find-SdkTool "mt.exe"
+
+          # 2. Discover Visual Studio installations (including VS 2022 & VS 2026 Enterprise/Preview)
+          $vsInstallDirs = New-Object System.Collections.Generic.List[string]
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $detected = & $vswhere -products * -prerelease -property installationPath 2>$null
+            foreach ($p in $detected) {
+              if ($p -and (Test-Path $p)) { $vsInstallDirs.Add($p.Trim()) }
+            }
+          }
+          foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if ($root -and (Test-Path "$root\Microsoft Visual Studio")) {
+              Get-ChildItem -Path "$root\Microsoft Visual Studio\*\*" -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  if (-not $vsInstallDirs.Contains($_.FullName)) { $vsInstallDirs.Add($_.FullName) }
+                }
+            }
+          }
+
+          # 3. Locate an architecture-matched LLVM bin directory containing libclang.dll (+ clang.exe & clang-cl.exe on ARM64)
+          $llvmCandidates = New-Object System.Collections.Generic.List[string]
+          if ($hostArch -eq "Arm64") {
+            foreach ($vs in $vsInstallDirs) {
+              $llvmCandidates.Add("$vs\VC\Tools\Llvm\ARM64\bin")
+            }
+            $llvmCandidates.Add("C:\Program Files\LLVM\bin")
+          } else {
+            $llvmCandidates.Add("C:\Program Files\LLVM\bin")
+            foreach ($vs in $vsInstallDirs) {
+              $llvmCandidates.Add("$vs\VC\Tools\Llvm\x64\bin")
+            }
+          }
+
+          $selectedLlvmBin = $null
+          foreach ($dir in $llvmCandidates) {
+            $dll = Join-Path $dir "libclang.dll"
+            if (Test-Path $dll) {
+              $machine = Get-PeMachine $dll
+              Write-Host "Inspecting $dll -> PE machine 0x$($machine.ToString('X4'))"
+              if ($machine -eq $expectedMachine) {
+                if (-not $isArm64Target -or ((Test-Path (Join-Path $dir "clang-cl.exe")) -and (Test-Path (Join-Path $dir "clang.exe")))) {
+                  $selectedLlvmBin = $dir
+                  break
+                }
+              }
+            }
+          }
+
+          # Fallback: install official native Windows-on-ARM LLVM if runner lacks ARM64 libclang.dll / clang-cl.exe
+          if (-not $selectedLlvmBin -and $hostArch -eq "Arm64") {
+            Write-Host "Native ARM64 libclang.dll + clang-cl.exe not found; installing official LLVM (woa64)..."
+            $llvmExe = Join-Path $env:RUNNER_TEMP "LLVM-woa64.exe"
+            $llvmDir = Join-Path $env:RUNNER_TEMP "LLVM-arm64"
+            Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-woa64.exe" -OutFile $llvmExe
+            $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue)?.Source
+            if (-not $sevenZip -and (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+              $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+            }
+            if ($sevenZip) {
+              & $sevenZip x $llvmExe "-o$llvmDir" -y | Out-Null
+            }
+            $extractedDll = Join-Path $llvmDir "bin\libclang.dll"
+            if ((Test-Path $extractedDll) -and ((Get-PeMachine $extractedDll) -eq $expectedMachine)) {
+              $selectedLlvmBin = Join-Path $llvmDir "bin"
+            } else {
+              Start-Process -FilePath $llvmExe -ArgumentList "/S", "/D=$llvmDir" -Wait
+              $extractedDll = Join-Path $llvmDir "bin\libclang.dll"
+              if ((Test-Path $extractedDll) -and ((Get-PeMachine $extractedDll) -eq $expectedMachine)) {
+                $selectedLlvmBin = Join-Path $llvmDir "bin"
+              }
+            }
+          }
+
+          if (-not $selectedLlvmBin) {
+            throw "Failed to locate architecture-matched libclang.dll (expected PE machine 0x$($expectedMachine.ToString('X4')))"
+          }
+
+          echo "LIBCLANG_PATH=$selectedLlvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $matchingClangExe = Join-Path $selectedLlvmBin "clang.exe"
+          if (Test-Path $matchingClangExe) {
+            echo "CLANG_PATH=$matchingClangExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+          echo "$selectedLlvmBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          Write-Host "Configured LIBCLANG_PATH=$selectedLlvmBin"
+
+          # 4. Windows ARM64 C/C++ & CMake toolchain configuration (whisper.cpp/ggml, aws-lc-sys, ring)
+          if ($isArm64Target) {
+            if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+              foreach ($vs in $vsInstallDirs) {
+                $vsNinja = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+                if (Test-Path (Join-Path $vsNinja "ninja.exe")) {
+                  echo "$vsNinja" | Out-File -FilePath $env:GITHUB_PATH -Append
+                  Write-Host "Added Ninja from $vsNinja"
+                  break
+                }
+              }
+            }
+
+            $clangClPath = (Join-Path $selectedLlvmBin "clang-cl.exe").Replace('\', '/')
+            $clangPath   = (Join-Path $selectedLlvmBin "clang.exe")
+
+            # Verify clang can parse standard Windows/CRT headers for bindgen & ring before starting Cargo
+            "#include <stdint.h>`n#include <stdio.h>`nint main(void) { return 0; }" |
+              & $clangPath --target=aarch64-pc-windows-msvc -fsyntax-only -x c -
+            if ($LASTEXITCODE -ne 0) {
+              throw "clang preflight header check failed with exit code $LASTEXITCODE"
+            }
+            Write-Host "Verified clang.exe + MSVC/SDK headers for aarch64-pc-windows-msvc"
+
+            # Use CC_PREFER_CLANG_CL_OVER_MSVC=1 rather than global CC=clang-cl so:
+            # - ring-0.17.14 uses clang.exe for GNU .S assembly files
+            # - aws-lc-sys & cc-rs crates use clang-cl.exe
+            # - whisper-rs-sys CMake+Ninja uses explicit forward-slash clang-cl.exe paths
+            $cmakeEnv = @(
+              "CC_PREFER_CLANG_CL_OVER_MSVC=1",
               "CMAKE_GENERATOR=Ninja",
-              "CMAKE_C_COMPILER=clang-cl",
-              "CMAKE_CXX_COMPILER=clang-cl",
-              "CC=clang-cl",
-              "CXX=clang-cl"
-            ) | Out-File -FilePath $env:GITHUB_ENV -Append
+              "CMAKE_C_COMPILER=$clangClPath",
+              "CMAKE_CXX_COMPILER=$clangClPath",
+              "CMAKE_ASM_COMPILER=$clangClPath"
+            )
+            if ($rcPath) {
+              $cmakeEnv += "CMAKE_RC_COMPILER=$($rcPath.Replace('\', '/'))"
+            }
+            if ($mtPath) {
+              $cmakeEnv += "CMAKE_MT=$($mtPath.Replace('\', '/'))"
+            }
+            $cmakeEnv | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
       - name: Install Rust stable toolchain (single target)
@@ -318,9 +456,36 @@ jobs:
           path: ${{ matrix.pkg_glob }}
           if-no-files-found: error
 
-      - name: Publish packages to GitHub Release (on tag push v*)
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Create GitHub Release (All Installers + Checksums + Source)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all packaged installers (.dmg, .deb, .exe)
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release-assets
+        run: |
+          ls -lh
+          sha256sum VoiceBridge-* | tee SHA256SUMS.txt
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.pkg_glob }}
+          name: VoiceBridge ${{ github.ref_name }}
+          body_path: packaging/RELEASE_NOTES.md
+          files: |
+            release-assets/VoiceBridge-*
+            release-assets/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true

@@ -5,6 +5,7 @@
 # VoiceBridge — Speech To Text To Translate (Rust)
 
 <p align="center">
+  <a href="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml"><img src="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build &amp; Package (.dmg / .deb / .exe — x86_64 &amp; ARM64)"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://github.com/longbridge/gpui-kit"><img src="https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg" alt="GUI"></a>
   <a href="https://developer.apple.com/metal/"><img src="https://img.shields.io/badge/macOS-Metal_GPU-success.svg?logo=apple" alt="macOS"></a>
