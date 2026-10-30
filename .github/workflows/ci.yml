@@ -333,10 +333,34 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
 
-      - name: Build release binary (single target)
-        if: ${{ !matrix.universal_macos }}
+      - name: Build release binary on Unix (single target)
+        if: ${{ !matrix.universal_macos && runner.os != 'Windows' }}
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build release binary on Windows (single target)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          cmd /c "cargo build --release --locked --target ${{ matrix.target }} > build.log 2>&1"
+          $code = $LASTEXITCODE
+          Get-Content build.log
+          if ($code -ne 0) {
+            $clean = Get-Content build.log | ForEach-Object { $_ -replace '\x1b\[[0-9;]*[a-zA-Z]', '' }
+            $errMatches = $clean |
+              Select-String -Pattern '(^error(\[|:)|fatal error|CMake Error|LNK[0-9]{4}|panicked at|FAILED:|Unable to generate bindings)' -Context 2,6 |
+              Select-Object -Last 10
+            foreach ($m in $errMatches) {
+              $msg = ($m.ToString() -replace '%','%25' -replace '\r','' -replace '\n','%0A')
+              Write-Host "::error title=Cargo Build Error::$msg"
+            }
+            $tail = (($clean | Select-Object -Last 50) -join "`n") -replace '%','%25' -replace '\r','' -replace '\n','%0A'
+            Write-Host "::error title=Build Log Tail::$tail"
+            exit $code
+          }
+          Remove-Item build.log -ErrorAction SilentlyContinue
 
       - name: Build macOS Universal2 binary (ARM64 + x86_64 via lipo)
         if: ${{ matrix.universal_macos }}

@@ -36,3 +36,4 @@
 | **Windows** | Windows on ARM (`arm64`) | `VoiceBridge-windows-arm64.exe` | Native ARM64 single-file portable executable |
 | **Linux** | 64-bit (`amd64` / `x86_64`) | `VoiceBridge-linux-amd64.deb` | Debian / Ubuntu package (`sudo dpkg -i VoiceBridge-linux-amd64.deb`) |
 | **Linux** | ARM64 (`arm64` / `aarch64`) | `VoiceBridge-linux-arm64.deb` | Debian / Ubuntu ARM64 package (`sudo dpkg -i VoiceBridge-linux-arm64.deb`) |
+
