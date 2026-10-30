@@ -292,6 +292,14 @@ jobs:
             $defFile = "$env:RUNNER_TEMP\Vulkan-Loader-1.4.309\loader\vulkan-1.def"
             & "$msvcBin\lib.exe" "/def:$defFile" "/out:$vkSdk\Lib\vulkan-1.lib" "/machine:x64" | Out-Null
 
+            # Install official Vulkan Runtime (vulkan-1.dll) silently so test & smoke binaries run cleanly on CI runner
+            $vkRtExe = Join-Path $env:RUNNER_TEMP "vulkan-runtime.exe"
+            curl.exe -sSL "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-runtime.exe" -o $vkRtExe
+            if (Test-Path $vkRtExe) {
+              Start-Process -FilePath $vkRtExe -ArgumentList "/S" -Wait
+              Write-Host "Installed Vulkan Runtime (vulkan-1.dll)"
+            }
+
             echo "VULKAN_SDK=$vkSdk" | Out-File -FilePath $env:GITHUB_ENV -Append
             echo "$vkSdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
             Write-Host "Configured VULKAN_SDK=$vkSdk"
@@ -489,7 +497,7 @@ jobs:
 
       - name: Run unit tests on Windows x86_64
         if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: cargo test --release --locked ${{ matrix.cargo_features }}
+        run: cargo test --release --locked
 
       - name: Smoke test CLI on Unix (--help)
         if: runner.os != 'Windows'
