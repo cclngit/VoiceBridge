@@ -2070,7 +2070,7 @@
                 const res = await fetch('/api/config');
                 if (res.ok) {
                     currentConfig = await res.json();
-                    const activeSrcLang = (currentConfig.stt && currentConfig.stt.language && currentConfig.stt.language !== 'auto')
+                    const activeSrcLang = (currentConfig.stt && currentConfig.stt.language)
                         ? currentConfig.stt.language
                         : (currentConfig.translation.source_lang || 'fr');
                     document.getElementById('cfg-source-lang').value = activeSrcLang;

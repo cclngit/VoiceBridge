@@ -5,17 +5,17 @@
     "vad_threshold": 0.015,
     "vad_silence_duration_ms": 700,
     "vad_min_speech_ms": 350,
-    "vad_max_speech_ms": 8000
+    "vad_max_speech_ms": 15000
   },
   "stt": {
     "engine_type": "whisper_local",
-    "model_id": "whisper_turbo_q5",
-    "model_path": "models/ggml-large-v3-turbo-q5_0.bin",
-    "model_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    "model_name": "Whisper Large-v3-Turbo Q5_0",
+    "model_id": "whisper_tiny",
+    "model_path": "models/ggml-tiny.bin",
+    "model_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+    "model_name": "Whisper Tiny (Vulkan GPU)",
     "api_url": "http://127.0.0.1:8000/v1/audio/transcriptions",
     "api_key": null,
-    "language": "fr",
+    "language": "auto",
     "n_threads": 4,
     "use_gpu": true,
     "gpu_backend": "auto",
@@ -25,7 +25,7 @@
   },
   "translation": {
     "enabled": true,
-    "source_lang": "fr",
+    "source_lang": "auto",
     "target_lang": "en",
     "engine": "auto",
     "local_api_url": "http://127.0.0.1:1234/v1/chat/completions",
@@ -38,7 +38,7 @@
   },
   "obs": {
     "mode": "dual",
-    "font_size": 34,
+    "font_size": 32,
     "text_color": "#ffffff",
     "highlight_color": "#38bdf8",
     "bg_color": "rgba(0, 0, 0, 0.65)",

@@ -74,6 +74,8 @@ pub struct VoiceBridgeApp {
     latest_trans_text: String,
     latest_source_lang: String,
     latest_target_lang: String,
+    configured_source_lang: String,
+    configured_target_lang: String,
     latest_stt_ms: u128,
     latest_trans_ms: u128,
     latest_confidence: f32,
@@ -149,6 +151,13 @@ impl VoiceBridgeApp {
         let models_catalog = get_available_models();
         let gpu_devices = list_gpu_devices();
 
+        let init_src = if !initial_cfg.stt.language.is_empty() {
+            initial_cfg.stt.language.clone()
+        } else {
+            initial_cfg.translation.source_lang.clone()
+        };
+        let init_tgt = initial_cfg.translation.target_lang.clone();
+
         let mut app = Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -156,8 +165,10 @@ impl VoiceBridgeApp {
             active_tab: GuiTab::Direct,
             latest_source_text: "Allez, c'est parti !".to_string(),
             latest_trans_text: "Let's get started!".to_string(),
-            latest_source_lang: "FR".to_string(),
-            latest_target_lang: "EN".to_string(),
+            latest_source_lang: if init_src == "auto" { "AUTO".to_string() } else { init_src.to_uppercase() },
+            latest_target_lang: init_tgt.to_uppercase(),
+            configured_source_lang: init_src,
+            configured_target_lang: init_tgt,
             latest_stt_ms: 1152,
             latest_trans_ms: 661,
             latest_confidence: 98.4,
@@ -195,8 +206,12 @@ impl VoiceBridgeApp {
             if let Some(first) = app.history_entries.first() {
                 app.latest_source_text = first.original_text.clone();
                 app.latest_trans_text = first.translated_text.clone();
-                app.latest_source_lang = first.source_lang.to_uppercase();
-                app.latest_target_lang = first.target_lang.to_uppercase();
+                if app.configured_source_lang == "auto" {
+                    app.latest_source_lang = first.source_lang.to_uppercase();
+                } else {
+                    app.latest_source_lang = app.configured_source_lang.to_uppercase();
+                }
+                app.latest_target_lang = app.configured_target_lang.to_uppercase();
                 app.latest_stt_ms = first.stt_duration_ms;
                 app.latest_trans_ms = first.translation_duration_ms;
             }
@@ -242,8 +257,12 @@ impl VoiceBridgeApp {
                     if let Some(evt) = new_event {
                         this.latest_source_text = evt.original_text.clone();
                         this.latest_trans_text = evt.translated_text.clone();
-                        this.latest_source_lang = evt.source_lang.to_uppercase();
-                        this.latest_target_lang = evt.target_lang.to_uppercase();
+                        if this.configured_source_lang == "auto" {
+                            this.latest_source_lang = evt.source_lang.to_uppercase();
+                        } else {
+                            this.latest_source_lang = this.configured_source_lang.to_uppercase();
+                        }
+                        this.latest_target_lang = this.configured_target_lang.to_uppercase();
                         this.latest_stt_ms = evt.stt_duration_ms;
                         this.latest_trans_ms = evt.translation_duration_ms;
 
@@ -715,18 +734,26 @@ impl VoiceBridgeApp {
         let src = source.clone();
         let tgt = target.clone();
 
+        self.configured_source_lang = source.clone();
+        self.configured_target_lang = target.clone();
+        self.latest_source_lang = if source == "auto" { "AUTO".to_string() } else { source.to_uppercase() };
+        self.latest_target_lang = target.to_uppercase();
+
         self.tokio_handle.spawn(async move {
             let mut cfg = state.config.write().await;
             cfg.translation.source_lang = src.clone();
             cfg.translation.target_lang = tgt.clone();
+            cfg.stt.language = src.clone();
             let _ = cfg.save_default();
 
             let mut trans = state.translation_service.write().await;
-            trans.set_languages(src, tgt);
+            trans.set_languages(src.clone(), tgt.clone());
+
+            let mut engine = state.whisper_engine.lock().await;
+            engine.set_language(&src);
+            tracing::info!("Languages updated in memory and saved: source='{}', target='{}'", src, tgt);
         });
 
-        self.latest_source_lang = source.to_uppercase();
-        self.latest_target_lang = target.to_uppercase();
         cx.notify();
     }
 
@@ -1191,7 +1218,11 @@ impl VoiceBridgeApp {
                                                 div()
                                                     .text_xs()
                                                     .text_color(TEXT_DIM)
-                                                    .child("Français"),
+                                                    .child(if self.configured_source_lang == "auto" {
+                                                        format!("Source : Auto ({})", self.latest_source_lang)
+                                                    } else {
+                                                        format!("Source : {}", self.configured_source_lang.to_uppercase())
+                                                    }),
                                             ),
                                     ),
                             ),
@@ -1289,7 +1320,7 @@ impl VoiceBridgeApp {
                                         div()
                                             .text_xs()
                                             .text_color(rgba_hex(0x94a3b8))
-                                            .child("OBS synchronisé"),
+                                            .child(format!("Cible : {} • OBS synchronisé", self.configured_target_lang.to_uppercase())),
                                     )
                                     .child(
                                         h_flex()
@@ -2229,7 +2260,8 @@ impl VoiceBridgeApp {
     // TAB: LANGUES (SOURCE & TARGET TRANSLATION)
     // ═══════════════════════════════════════════════════════════════
     fn render_langues_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let languages = [
+        let source_languages = [
+            ("auto", "⚡ Détection Auto (Multilingue)"),
             ("fr", "Français"),
             ("en", "English"),
             ("es", "Español"),
@@ -2239,10 +2271,26 @@ impl VoiceBridgeApp {
             ("zh", "简体中文"),
             ("pt", "Português"),
             ("ru", "Русский"),
+            ("ar", "العربية"),
+            ("ko", "한국어"),
         ];
 
-        let cur_source = self.latest_source_lang.to_lowercase();
-        let cur_target = self.latest_target_lang.to_lowercase();
+        let target_languages = [
+            ("en", "English"),
+            ("fr", "Français"),
+            ("es", "Español"),
+            ("de", "Deutsch"),
+            ("it", "Italiano"),
+            ("ja", "日本語"),
+            ("zh", "简体中文"),
+            ("pt", "Português"),
+            ("ru", "Русский"),
+            ("ar", "العربية"),
+            ("ko", "한국어"),
+        ];
+
+        let cur_source = self.configured_source_lang.to_lowercase();
+        let cur_target = self.configured_target_lang.to_lowercase();
 
         v_flex()
             .size_full()
@@ -2266,7 +2314,7 @@ impl VoiceBridgeApp {
                             .child(
                                 v_flex()
                                     .gap_1p5()
-                                    .children(languages.iter().map(|(code, name)| {
+                                    .children(source_languages.iter().map(|(code, name)| {
                                         let is_sel = cur_source == *code;
                                         let code_str = code.to_string();
                                         let cur_tgt = cur_target.clone();
@@ -2290,7 +2338,7 @@ impl VoiceBridgeApp {
                                                     .justify_between()
                                                     .items_center()
                                                     .child(div().text_sm().font_medium().text_color(if is_sel { TEXT_MAIN } else { TEXT_BODY }).child(*name))
-                                                    .child(div().text_xs().font_bold().text_color(if is_sel { ACCENT_CYAN } else { TEXT_DIM }).child(code.to_uppercase())),
+                                                    .child(div().text_xs().font_bold().text_color(if is_sel { ACCENT_CYAN } else { TEXT_DIM }).child(if *code == "auto" { "AUTO".to_string() } else { code.to_uppercase() })),
                                             )
                                     })),
                             ),
@@ -2309,7 +2357,7 @@ impl VoiceBridgeApp {
                             .child(
                                 v_flex()
                                     .gap_1p5()
-                                    .children(languages.iter().map(|(code, name)| {
+                                    .children(target_languages.iter().map(|(code, name)| {
                                         let is_sel = cur_target == *code;
                                         let code_str = code.to_string();
                                         let cur_src = cur_source.clone();

@@ -24,6 +24,7 @@
 
 - **🌍 Smart Multilingual Translation & 📺 OBS Studio Overlay**
   - Pluggable translation backends (*OpenAI-compatible APIs, local Ollama LLMs, LibreTranslate,* and resilient offline fallback).
+  - **Persistent Multilingual Selection**: Fixed source and target language persistence across the GPUI desktop, Web UI, config, and Whisper engine—including automatic detection (`auto`) without reversion.
   - Embedded HTTP + Server-Sent Events (`Axum`) server with web dashboard (`http://localhost:3000`) and 100% transparent **OBS Studio** subtitle overlay (`http://localhost:3000/obs`) featuring *Dual, Translated, Source* modes and *Glow, Netflix, Boxed* themes.
   - Headless server mode (`--headless`) and automatic port fallback (`3000–3010`).
 

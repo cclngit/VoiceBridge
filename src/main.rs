@@ -407,10 +407,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                         let cfg = state.config.read().await.clone();
                         let target_lang = cfg.translation.target_lang.clone();
-                        let effective_source_lang = if cfg.stt.language != "auto" && !cfg.stt.language.is_empty() {
+                        let effective_source_lang = if !cfg.stt.language.is_empty() {
                             cfg.stt.language.clone()
-                        } else {
+                        } else if !cfg.translation.source_lang.is_empty() {
                             cfg.translation.source_lang.clone()
+                        } else {
+                            "auto".to_string()
                         };
 
                         let stt_result = if cfg.stt.engine_type == "whisper_local" {

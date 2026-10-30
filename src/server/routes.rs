@@ -83,11 +83,13 @@ async fn update_config_handler(
     State(state): State<AppState>,
     Json(mut new_config): Json<AppConfig>,
 ) -> Json<SystemStatus> {
-    // Keep STT language and Translation source_lang synchronized
-    let chosen_source_lang = if new_config.stt.language != "auto" && !new_config.stt.language.is_empty() {
+    // Synchronize chosen source language between STT and Translation
+    let chosen_source_lang = if !new_config.stt.language.is_empty() {
         new_config.stt.language.clone()
-    } else {
+    } else if !new_config.translation.source_lang.is_empty() {
         new_config.translation.source_lang.clone()
+    } else {
+        "auto".to_string()
     };
     new_config.stt.language = chosen_source_lang.clone();
     new_config.translation.source_lang = chosen_source_lang.clone();
