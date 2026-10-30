@@ -384,9 +384,9 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "distil_whisper_large_v3".to_string(),
-            name: format!("Distil-Whisper Large-v3 ({})", hw),
+            name: format!("Distil-Whisper Large-v3 [Anglais] ({})", hw),
             provider: "Hugging Face / whisper.cpp".to_string(),
-            description: "Modèle distillé par Hugging Face (756 Mo). 6x plus rapide que Large-v3 avec moins de 1% d'écart de WER.".to_string(),
+            description: "Modèle distillé par Hugging Face (756 Mo) optimisé exclusivement pour l'anglais. Non adapté au français.".to_string(),
             default_engine: "whisper_local".to_string(),
             default_model_name: "models/ggml-distil-large-v3.bin".to_string(),
             default_api_url: "".to_string(),
@@ -395,7 +395,7 @@ pub fn get_available_models() -> Vec<ModelMetadata> {
             supports_diarization: false,
             is_local_gpu: true,
             license: "MIT".to_string(),
-            badge: "Distil 756 Mo".to_string(),
+            badge: "Anglais uniquement • 756 Mo".to_string(),
         },
 
         // Advanced Open-Source Models (Local Host via Speaches / vLLM / Ollama)

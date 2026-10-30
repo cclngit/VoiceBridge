@@ -23,8 +23,11 @@
   - Live-adjustable Voice Activity Detection (RMS sensitivity threshold, end-of-sentence silence, min/max speech segment duration) with < 500 ms hot reload.
 
 - **🌍 Smart Multilingual Translation & 📺 OBS Studio Overlay**
-  - Pluggable translation backends (*OpenAI-compatible APIs, local Ollama LLMs, LibreTranslate,* and resilient offline fallback).
-  - **Persistent Multilingual Selection**: Fixed source and target language persistence across the GPUI desktop, Web UI, config, and Whisper engine—including automatic detection (`auto`) without reversion.
+  - Pluggable translation backends (*Direct Google Chrome Neural MT, LibreTranslate, local Ollama LLMs,* and resilient offline fallback).
+  - **Definitive Language Detection & Persistence Fix**:
+    - Fixed Whisper `auto` language detection decoding loop: `params.set_detect_language(false)` with `params.set_language(Some("auto"))` now correctly auto-identifies spoken languages (French, Spanish, English, etc.) and decodes full sentences without dropping audio.
+    - Isolated and labeled `Distil-Whisper Large-v3 [Anglais]` as English-only in the catalog, preventing accidental English-only phonetic decode of French or other languages.
+    - Full bidirectional synchronization between the GPUI Langues tab, Web UI, config persistence, and the Whisper engine runtime without language reversion.
   - Embedded HTTP + Server-Sent Events (`Axum`) server with web dashboard (`http://localhost:3000`) and 100% transparent **OBS Studio** subtitle overlay (`http://localhost:3000/obs`) featuring *Dual, Translated, Source* modes and *Glow, Netflix, Boxed* themes.
   - Headless server mode (`--headless`) and automatic port fallback (`3000–3010`).
 

@@ -29,10 +29,58 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn sanitize(&mut self) {
+        // 1. If engine_type is remote_asr pointing to offline local server, fallback to whisper_local
+        if self.stt.engine_type != "whisper_local" && self.stt.api_url.contains("127.0.0.1:8000") {
+            if self.stt.model_id == "qwen3_asr" || self.stt.model_id.is_empty() {
+                self.stt.engine_type = "whisper_local".to_string();
+                self.stt.model_id = "whisper_turbo_q5".to_string();
+                self.stt.model_path = "models/ggml-large-v3-turbo-q5_0.bin".to_string();
+                self.stt.model_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string();
+                self.stt.model_name = format!("Whisper Large-v3-Turbo Q5_0 ({})", crate::stt::active_whisper_backend_label());
+            }
+        }
+
+        // 2. Ensure languages are normalized
+        if self.stt.language.trim().is_empty() {
+            self.stt.language = "auto".to_string();
+        }
+        if self.translation.source_lang.trim().is_empty() {
+            self.translation.source_lang = "auto".to_string();
+        }
+        if self.translation.target_lang.trim().is_empty() {
+            self.translation.target_lang = "en".to_string();
+        }
+
+        // 3. Prevent identity translation loop (e.g. source fr -> target fr)
+        if !self.translation.source_lang.eq_ignore_ascii_case("auto")
+            && self.translation.source_lang.eq_ignore_ascii_case(&self.translation.target_lang)
+        {
+            if self.translation.source_lang.eq_ignore_ascii_case("en") {
+                self.translation.target_lang = "fr".to_string();
+            } else {
+                self.translation.target_lang = "en".to_string();
+            }
+        }
+
+        // 4. If distil_whisper is selected with non-English language, switch to turbo
+        if self.stt.model_id == "distil_whisper_large_v3"
+            && !self.stt.language.eq_ignore_ascii_case("en")
+            && !self.translation.source_lang.eq_ignore_ascii_case("en")
+        {
+            tracing::warn!("Distil-Whisper est réservé à l'anglais. Bascule automatique sur Whisper Large-v3-Turbo pour le support multilingue.");
+            self.stt.model_id = "whisper_turbo_q5".to_string();
+            self.stt.model_path = "models/ggml-large-v3-turbo-q5_0.bin".to_string();
+            self.stt.model_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string();
+            self.stt.model_name = format!("Whisper Large-v3-Turbo Q5_0 ({})", crate::stt::active_whisper_backend_label());
+        }
+    }
+
     pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
         if let Ok(content) = fs::read_to_string(path.as_ref()) {
-            match serde_json::from_str(&content) {
-                Ok(cfg) => {
+            match serde_json::from_str::<Self>(&content) {
+                Ok(mut cfg) => {
+                    cfg.sanitize();
                     tracing::info!("Loaded configuration from {}", path.as_ref().display());
                     return cfg;
                 }
@@ -45,7 +93,8 @@ impl AppConfig {
                 }
             }
         }
-        let default_cfg = Self::default();
+        let mut default_cfg = Self::default();
+        default_cfg.sanitize();
         if let Ok(json) = serde_json::to_string_pretty(&default_cfg) {
             let _ = fs::write(path.as_ref(), json);
         }
@@ -117,10 +166,10 @@ fn default_engine_type() -> String {
     "whisper_local".to_string()
 }
 fn default_model_id() -> String {
-    "whisper_tiny".to_string()
+    "whisper_turbo_q5".to_string()
 }
 fn default_model_name() -> String {
-    format!("Whisper Tiny ({})", crate::stt::active_whisper_backend_label())
+    format!("Whisper Large-v3-Turbo Q5_0 ({})", crate::stt::active_whisper_backend_label())
 }
 fn default_api_url() -> String {
     "http://127.0.0.1:8000/v1/audio/transcriptions".to_string()
@@ -137,8 +186,8 @@ impl Default for SttConfig {
         Self {
             engine_type: default_engine_type(),
             model_id: default_model_id(),
-            model_path: "models/ggml-tiny.bin".to_string(),
-            model_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin".to_string(),
+            model_path: "models/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            model_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
             model_name: default_model_name(),
             api_url: default_api_url(),
             api_key: None,
@@ -169,7 +218,7 @@ impl Default for TranslationConfig {
         Self {
             enabled: true,
             source_lang: "auto".to_string(),
-            target_lang: "fr".to_string(),
+            target_lang: "en".to_string(),
             engine: "auto".to_string(),
             local_api_url: "http://127.0.0.1:1234/v1/chat/completions".to_string(),
             model_name: "local-model".to_string(),

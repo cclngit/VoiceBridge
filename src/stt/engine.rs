@@ -348,8 +348,12 @@ impl WhisperEngine {
             params.set_language(Some(lang_to_use));
             params.set_detect_language(false);
         } else {
-            params.set_language(None);
-            params.set_detect_language(true);
+            // "auto" language detection: whisper.cpp will automatically detect the spoken language
+            // (e.g. French, Spanish, English) AND THEN decode speech.
+            // WARNING: set_detect_language MUST be FALSE, because if set to true whisper.cpp returns 0
+            // immediately after detection without performing any transcription!
+            params.set_language(Some("auto"));
+            params.set_detect_language(false);
         }
 
         params.set_print_special(false);
@@ -542,4 +546,22 @@ pub fn extract_speaker_if_present(text: &str) -> (Option<String>, String) {
     }
 
     (None, trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_check_models() {
+        use whisper_rs::{WhisperContext, WhisperContextParameters};
+        for entry in std::fs::read_dir("models").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().map_or(false, |e| e == "bin") {
+                let mut params = WhisperContextParameters::default();
+                params.use_gpu(false);
+                if let Ok(ctx) = WhisperContext::new_with_params(path.to_str().unwrap(), params) {
+                    println!("Model: {:?}, is_multilingual: {}", path.file_name().unwrap(), ctx.is_multilingual());
+                }
+            }
+        }
+    }
 }

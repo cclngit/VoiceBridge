@@ -762,9 +762,18 @@ impl VoiceBridgeApp {
     // ═══════════════════════════════════════════════════════════════
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active_engine_label = if self.active_engine == "remote_asr" {
-            "Speaches / VibeVoice Engine"
+            let model_title = crate::stt::find_model(&self.active_model_id)
+                .map(|m| m.name)
+                .unwrap_or_else(|| self.active_model_id.clone());
+            if model_title.is_empty() {
+                "Serveur ASR Distant".to_string()
+            } else {
+                format!("Serveur ASR ({})", model_title)
+            }
         } else {
-            "Whisper Large-v3-Turbo"
+            crate::stt::find_model(&self.active_model_id)
+                .map(|m| m.name)
+                .unwrap_or_else(|| "Whisper Local".to_string())
         };
         let hw_label = crate::stt::active_hardware_summary(
             self.use_gpu,
