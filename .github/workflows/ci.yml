@@ -148,11 +148,11 @@ jobs:
           cuda: "12.6.3"
           sub-packages: '["nvcc", "cublas_dev", "cudart"]'
 
-      - name: Setup MSVC ARM64 Developer Environment on Windows ARM64
-        if: matrix.target == 'aarch64-pc-windows-msvc'
+      - name: Setup MSVC Developer Environment on Windows
+        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: arm64
+          arch: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}
 
       - name: Configure Windows SDK tools (fxc.exe, rc.exe), Vulkan SDK & architecture-matched LLVM / Clang
         if: runner.os == 'Windows'

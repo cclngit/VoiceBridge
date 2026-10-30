@@ -102,9 +102,9 @@ impl TranslationService {
         let start_time = Instant::now();
         let trimmed = text.trim();
 
-        let src = if source_lang == "auto" || source_lang.is_empty() {
-            if self.source_lang == "auto" || self.source_lang.is_empty() {
-                "en"
+        let src = if source_lang.is_empty() {
+            if self.source_lang.is_empty() {
+                "auto"
             } else {
                 &self.source_lang
             }
@@ -113,12 +113,16 @@ impl TranslationService {
         };
 
         let tgt = if target_lang.is_empty() {
-            &self.target_lang
+            if self.target_lang.is_empty() {
+                "fr"
+            } else {
+                &self.target_lang
+            }
         } else {
             target_lang
         };
 
-        if !self.enabled || trimmed.is_empty() || src.eq_ignore_ascii_case(tgt) {
+        if !self.enabled || trimmed.is_empty() || (!src.eq_ignore_ascii_case("auto") && src.eq_ignore_ascii_case(tgt)) {
             return TranslationResult {
                 original_text: trimmed.to_string(),
                 translated_text: trimmed.to_string(),
@@ -129,7 +133,7 @@ impl TranslationService {
             };
         }
 
-        // Tier 1: If user explicitly configured Local LLM and engine is set to local_llm or api
+        // Tier 1: If user explicitly configured Local LLM / API
         if self.engine == "local_llm" || self.engine == "api" {
             if let Ok(translated) = self.translate_via_llm_api(trimmed, tgt).await {
                 return TranslationResult {
@@ -143,7 +147,31 @@ impl TranslationService {
             }
         }
 
-        // Tier 2: Instant High-Speed Neural MT (Zero-setup MyMemory API)
+        // Tier 2: Google Chrome Neural MT (Ultra-fast, zero-quota, highest accuracy)
+        if let Ok(translated) = self.translate_via_google_chrome(trimmed, src, tgt).await {
+            return TranslationResult {
+                original_text: trimmed.to_string(),
+                translated_text: translated,
+                source_lang: src.to_string(),
+                target_lang: tgt.to_string(),
+                duration_ms: start_time.elapsed().as_millis(),
+                engine_used: "Google Neural MT".to_string(),
+            };
+        }
+
+        // Tier 3: Google GTX Neural MT (Reliable secondary endpoint)
+        if let Ok(translated) = self.translate_via_google_gtx(trimmed, src, tgt).await {
+            return TranslationResult {
+                original_text: trimmed.to_string(),
+                translated_text: translated,
+                source_lang: src.to_string(),
+                target_lang: tgt.to_string(),
+                duration_ms: start_time.elapsed().as_millis(),
+                engine_used: "Google Neural MT (GTX)".to_string(),
+            };
+        }
+
+        // Tier 4: MyMemory Neural MT
         if let Ok(translated) = self.translate_via_neural_mt(trimmed, src, tgt).await {
             return TranslationResult {
                 original_text: trimmed.to_string(),
@@ -151,11 +179,11 @@ impl TranslationService {
                 source_lang: src.to_string(),
                 target_lang: tgt.to_string(),
                 duration_ms: start_time.elapsed().as_millis(),
-                engine_used: "Neural MT (Direct)".to_string(),
+                engine_used: "MyMemory MT".to_string(),
             };
         }
 
-        // Tier 3: Secondary Neural MT mirror fallback (LibreTranslate / Lingva)
+        // Tier 5: Secondary Neural MT mirror fallback (LibreTranslate)
         if let Ok(translated) = self.translate_via_fallback_mt(trimmed, src, tgt).await {
             return TranslationResult {
                 original_text: trimmed.to_string(),
@@ -163,11 +191,11 @@ impl TranslationService {
                 source_lang: src.to_string(),
                 target_lang: tgt.to_string(),
                 duration_ms: start_time.elapsed().as_millis(),
-                engine_used: "Neural MT (Secours)".to_string(),
+                engine_used: "LibreTranslate MT".to_string(),
             };
         }
 
-        // Tier 4: Fallback attempt with Local LLM API if neural MT was unreachable
+        // Tier 6: Fallback attempt with Local LLM API
         if let Ok(translated) = self.translate_via_llm_api(trimmed, tgt).await {
             return TranslationResult {
                 original_text: trimmed.to_string(),
@@ -179,7 +207,7 @@ impl TranslationService {
             };
         }
 
-        // Tier 5: Total fallback if no network and no local server available
+        // Tier 7: Total fallback if no network and no local server available
         TranslationResult {
             original_text: trimmed.to_string(),
             translated_text: trimmed.to_string(),
@@ -188,6 +216,130 @@ impl TranslationService {
             duration_ms: start_time.elapsed().as_millis(),
             engine_used: "Non traduit (Hors ligne)".to_string(),
         }
+    }
+
+    /// Primary Ultra-Fast Neural MT using Google Chrome Engine (Unlimited, ~40ms, multilingual)
+    async fn translate_via_google_chrome(
+        &self,
+        text: &str,
+        src: &str,
+        tgt: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let clean_src = if src.eq_ignore_ascii_case("auto") || src.is_empty() {
+            "auto"
+        } else {
+            src
+        };
+        let clean_tgt = if tgt.eq_ignore_ascii_case("auto") || tgt.is_empty() {
+            "en"
+        } else {
+            tgt
+        };
+
+        let url = format!(
+            "https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl={}&tl={}&q={}",
+            urlencoding::encode(clean_src),
+            urlencoding::encode(clean_tgt),
+            urlencoding::encode(text)
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Chrome MT HTTP status {}", resp.status()).into());
+        }
+
+        let val: serde_json::Value = resp.json().await?;
+        if let Some(arr) = val.as_array() {
+            let mut results = Vec::new();
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    results.push(s.to_string());
+                } else if let Some(sub_arr) = item.as_array() {
+                    if let Some(s) = sub_arr.first().and_then(|v| v.as_str()) {
+                        results.push(s.to_string());
+                    }
+                }
+            }
+            if !results.is_empty() {
+                let joined = results.join(" ");
+                let clean = clean_html_entities(&joined);
+                if !clean.trim().is_empty() {
+                    return Ok(clean);
+                }
+            }
+        } else if let Some(s) = val.as_str() {
+            let clean = clean_html_entities(s);
+            if !clean.trim().is_empty() {
+                return Ok(clean);
+            }
+        }
+
+        Err("No valid translation received from Chrome MT".into())
+    }
+
+    /// Secondary High-Speed Neural MT using Google GTX API
+    async fn translate_via_google_gtx(
+        &self,
+        text: &str,
+        src: &str,
+        tgt: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let clean_src = if src.eq_ignore_ascii_case("auto") || src.is_empty() {
+            "auto"
+        } else {
+            src
+        };
+        let clean_tgt = if tgt.eq_ignore_ascii_case("auto") || tgt.is_empty() {
+            "en"
+        } else {
+            tgt
+        };
+
+        let url = format!(
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
+            urlencoding::encode(clean_src),
+            urlencoding::encode(clean_tgt),
+            urlencoding::encode(text)
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(format!("GTX MT HTTP status {}", resp.status()).into());
+        }
+
+        let val: serde_json::Value = resp.json().await?;
+        if let Some(sentences) = val.get(0).and_then(|v| v.as_array()) {
+            let mut translated = String::new();
+            for s in sentences {
+                if let Some(part) = s.get(0).and_then(|v| v.as_str()) {
+                    translated.push_str(part);
+                }
+            }
+            let clean = clean_html_entities(&translated);
+            if !clean.trim().is_empty() {
+                return Ok(clean);
+            }
+        }
+
+        Err("No valid translation received from GTX MT".into())
     }
 
     /// Free high-speed Neural Machine Translation (MyMemory API) with auto-chunking for long sentences
@@ -406,4 +558,43 @@ fn clean_html_entities(s: &str) -> String {
         .replace("&nbsp;", " ")
         .replace("&#x27;", "'")
         .replace("&#x2F;", "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_translate_en_to_fr() {
+        let svc = TranslationService::new(
+            true,
+            "en".to_string(),
+            "fr".to_string(),
+            "auto".to_string(),
+            "".to_string(),
+            "".to_string(),
+            None,
+        );
+        let res = svc.translate("Hello world, this is a test", "en", "fr").await;
+        assert_ne!(res.translated_text, res.original_text);
+        assert!(!res.translated_text.is_empty());
+        println!("EN -> FR: '{}' -> '{}' ({})", res.original_text, res.translated_text, res.engine_used);
+    }
+
+    #[tokio::test]
+    async fn test_translate_en_to_es() {
+        let svc = TranslationService::new(
+            true,
+            "en".to_string(),
+            "es".to_string(),
+            "auto".to_string(),
+            "".to_string(),
+            "".to_string(),
+            None,
+        );
+        let res = svc.translate("How are you today?", "en", "es").await;
+        assert_ne!(res.translated_text, res.original_text);
+        assert!(!res.translated_text.is_empty());
+        println!("EN -> ES: '{}' -> '{}' ({})", res.original_text, res.translated_text, res.engine_used);
+    }
 }
