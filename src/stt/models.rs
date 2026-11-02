@@ -231,6 +231,53 @@ pub struct ModelMetadata {
 pub fn get_available_models() -> Vec<ModelMetadata> {
     let hw = active_whisper_backend_label();
     vec![
+        // Kyutai Moshi / Mimi / Delayed Streams Models (Candle GPU/CPU)
+        ModelMetadata {
+            id: "kyutai_stt_1b".to_string(),
+            name: format!("Kyutai STT 1B Streaming ({})", hw),
+            provider: "Kyutai Labs / Candle".to_string(),
+            description: "Moteur de reconnaissance vocale en streaming continu à 12.5 Hz (latence fixe de 500ms). Basé sur Moshi & Delayed Streams Modeling avec Semantic VAD intégré. Modèle FR/EN.".to_string(),
+            default_engine: "kyutai_streaming".to_string(),
+            default_model_name: "models/kyutai-stt-1b-en_fr.safetensors".to_string(),
+            default_api_url: "".to_string(),
+            download_url: Some("https://huggingface.co/kyutai/stt-1b-en_fr/resolve/main/model.safetensors".to_string()),
+            file_size_mb: 1150,
+            supports_diarization: false,
+            is_local_gpu: true,
+            license: "CC-BY-4.0".to_string(),
+            badge: "🚀 Streaming 500ms • 1.1 Go".to_string(),
+        },
+        ModelMetadata {
+            id: "kyutai_hibiki".to_string(),
+            name: format!("Kyutai Hibiki Simultanée FR/EN ({})", hw),
+            provider: "Kyutai Labs / Candle".to_string(),
+            description: "Traduction simultanée directe parole-vers-texte en temps réel avec accumulation adaptative de contexte et streaming mot à mot.".to_string(),
+            default_engine: "hibiki_streaming".to_string(),
+            default_model_name: "models/hibiki-fr-en.safetensors".to_string(),
+            default_api_url: "".to_string(),
+            download_url: Some("https://huggingface.co/kyutai/hibiki-fr-en/resolve/main/model.safetensors".to_string()),
+            file_size_mb: 1250,
+            supports_diarization: false,
+            is_local_gpu: true,
+            license: "CC-BY-4.0".to_string(),
+            badge: "🌐 Traduction Simultanée • 1.2 Go".to_string(),
+        },
+        ModelMetadata {
+            id: "kyutai_mimi".to_string(),
+            name: format!("Kyutai Mimi Codec 24kHz ({})", hw),
+            provider: "Kyutai Labs / Candle".to_string(),
+            description: "Codec audio neuronal causal à 12.5 Hz avec 80ms de lookahead et 8 niveaux de quantification RVQ (1.1 kbps).".to_string(),
+            default_engine: "kyutai_streaming".to_string(),
+            default_model_name: "models/mimi.safetensors".to_string(),
+            default_api_url: "".to_string(),
+            download_url: Some("https://huggingface.co/kyutai/mimi/resolve/main/model.safetensors".to_string()),
+            file_size_mb: 85,
+            supports_diarization: false,
+            is_local_gpu: true,
+            license: "MIT".to_string(),
+            badge: "⚡ Codec 80ms • 85 Mo".to_string(),
+        },
+
         // Local Whisper Models (Metal / CUDA / Vulkan / ROCm GPU or multithreaded CPU)
         ModelMetadata {
             id: "whisper_tiny".to_string(),

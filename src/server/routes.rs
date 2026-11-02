@@ -203,6 +203,25 @@ async fn switch_model_handler(
         }
     };
 
+    if model.default_engine == "kyutai_streaming" || model.default_engine == "hibiki_streaming" {
+        let mut cfg = state.config.write().await;
+        cfg.stt.engine_type = model.default_engine.clone();
+        cfg.stt.model_id = payload.model_id.clone();
+        cfg.stt.model_name = model.name.clone();
+        cfg.stt.model_path = model.default_model_name.clone();
+        if let Some(ref url) = model.download_url {
+            cfg.stt.model_url = url.clone();
+        }
+        let _ = cfg.save_to_file("config.json");
+
+        return Json(SwitchModelResponse {
+            success: true,
+            status: "ready".to_string(),
+            message: format!("{} activé en mode Streaming temps réel (Moshi / Delayed Streams).", model.name),
+            model_id: payload.model_id,
+        });
+    }
+
     if model.is_local_gpu {
         let model_path = model.default_model_name.clone();
 

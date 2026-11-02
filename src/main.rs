@@ -4,6 +4,7 @@
 )]
 
 mod audio;
+pub mod codec;
 mod config;
 mod gui;
 mod server;
@@ -415,7 +416,46 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             "auto".to_string()
                         };
 
-                        let stt_result = if cfg.stt.engine_type == "whisper_local" {
+                        let stt_result = if cfg.stt.engine_type == "kyutai_streaming" {
+                            let mut kyutai = state.kyutai_engine.lock().await;
+                            let converter_24k = crate::audio::resampler::AudioConverter::new(16000, 24000, 1);
+                            let samples_24k = converter_24k.process(&speech_segment);
+                            let mut all_words = Vec::new();
+                            for chunk in samples_24k.chunks(1920) {
+                                if chunk.len() == 1920 {
+                                    if let Ok(words) = kyutai.step_frame(chunk) {
+                                        for w in words {
+                                            let mut hibiki = state.hibiki_translator.lock().await;
+                                            let trans_chunk = hibiki
+                                                .feed_source_word(&w.word, false)
+                                                .map(|u| u.translated_chunk)
+                                                .unwrap_or_else(|| w.word.clone());
+
+                                            let stream_event = PipelineEvent::new_streaming(
+                                                w.word.clone(),
+                                                trans_chunk,
+                                                None,
+                                                effective_source_lang.clone(),
+                                                target_lang.clone(),
+                                                (w.end_ms.saturating_sub(w.start_ms)) as u128,
+                                                "Kyutai STT 1B Streaming".to_string(),
+                                            );
+                                            let _ = state.event_tx.send(stream_event);
+                                            all_words.push(w.word);
+                                        }
+                                    }
+                                }
+                            }
+                            let full_text = all_words.join(" ");
+                            let duration = (speech_segment.len() as u128 * 1000) / 16000;
+                            Ok(crate::stt::engine::TranscriptionResult {
+                                text: full_text,
+                                speaker: None,
+                                language: effective_source_lang.clone(),
+                                duration_ms: duration,
+                                model_name: "Kyutai STT 1B (Streaming)".to_string(),
+                            })
+                        } else if cfg.stt.engine_type == "whisper_local" {
                             let mut engine = whisper.lock().await;
                             engine.transcribe(&speech_segment, Some(&effective_source_lang), false)
                         } else {

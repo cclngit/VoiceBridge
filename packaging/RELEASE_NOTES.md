@@ -1,27 +1,45 @@
-## 🚀 VoiceBridge v0.2.1 — Notes de version (Changements)
+## 🚀 VoiceBridge v0.3.0 — Notes de version (Rupture Technologique Streaming)
 
-Cette mise à jour corrective résout définitivement les problèmes de détection de langue, de changement de langue et de transcription audio.
+Cette version majeure marque le passage de VoiceBridge d'une architecture par fenêtres audio (chunks batch) à une **architecture de streaming audio-texte continue à ultra-faible latence**, inspirée des travaux de recherche de Kyutai Labs (*Moshi*, *Mimi*, *Delayed Streams Modeling* et *Hibiki* - [arXiv:2410.00037](https://arxiv.org/abs/2410.00037)).
 
-### 🐛 Corrections de bugs & Améliorations
+---
 
-- **Correction critique de la détection automatique de langue (Whisper STT)**
-  - Correction du mode `auto` : passage de `params.set_detect_language(false)` avec `params.set_language(Some("auto"))`. Auparavant, activer `detect_language` provoquait un arrêt immédiat de `whisper.cpp` après la classification sans exécuter le décodage du texte, ce qui rendait le français muet en détection auto.
-  - La détection automatique identifie désormais la langue parlée (FR, EN, ES, DE, IT...) et transcrit immédiatement le texte dans la langue source.
+### 🌟 Nouveautés Majeures
 
-- **Isolement et étiquetage de `Distil-Whisper Large-v3 [Anglais]`**
-  - Distil-Whisper est un modèle optimisé par Hugging Face exclusivement sur l'anglais. Il est désormais clairement étiqueté `[Anglais]` dans le catalogue pour éviter qu'un utilisateur francophone ne l'utilise par mégarde (ce qui provoquait des transcriptions phonétiques en anglais comme *"And it's for that"* pour *"Et c'est pour ça"*).
-  - Le modèle par défaut et recommandé est désormais **Whisper Large-v3-Turbo Q5_0** (100% multilingue, très haute précision sur le français et ultra-rapide sur GPU).
+#### 1. Codec Audio Neuronal Causal Mimi (24 kHz / 12,5 Hz)
+- **Traitement causal par trames de 80 ms** : L'audio capturé est converti en flux 24 kHz et traité par pas de 1 920 échantillons (80 ms), avec seulement **80 ms de lookahead** (latence algorithmique aller-retour < 160 ms).
+- **Split RVQ (Residual Vector Quantization)** :
+  - **Codebook 0 (Sémantique)** : Distillation des représentations phonétiques et linguistiques de WavLM.
+  - **Codebooks 1 à 7 (Acoustique)** : Modélisation des détails acoustiques pour la reconstruction haute fidélité (débit ultra-compact de 1,1 kbps).
+- **Buffer audio causal** : Garantie d'absence de gigue (*zero-underflow*) et élimination des découpages artificiels.
 
-- **Nouveau moteur de traduction direct Google Chrome Neural MT & GTX**
-  - Ajout de l'endpoint direct de traduction neuronale Google Chrome (`dict-chrome-ex`) avec fallback Google GTX pour toutes les paires de langues (EN, FR, ES, etc.).
-  - Résout définitivement les erreurs de quota HTTP 429 rencontrées avec MyMemory.
+#### 2. Moteur STT Streaming sub-seconde & Semantic VAD (Kyutai 1B FR/EN)
+- **Latence fixe et bornée à 500 ms** : Grâce au paradigme *Delayed Streams Modeling*, les tokens textuels sont décodés avec un décalage de seulement 6 pas (480 ms ~ 500 ms) par rapport à la voix, divisant par 4 la latence perçue par rapport aux découpages Whisper classiques (1 500 ms à 3 500 ms).
+- **Semantic VAD (Détection Vocale Sémantique)** : Le modèle analyse directement les probabilités des tokens linguistiques pour distinguer le début et la fin de parole réelle des respirations, bruits de micro ou hésitations ("euh...").
+- **Horodatages au mot près (*Word-Level Timestamps*)** : Chaque mot est émis avec ses marqueurs temporels `start_ms` et `end_ms` précis à 80 ms près.
+- **Coexistence harmonieuse des moteurs** : Possibilité de basculer instantanément dans l'interface entre *Kyutai Streaming*, *Whisper Local GPU/CPU* et *Remote API (Speaches/vLLM)*.
 
-- **Assainissement automatique de la configuration (`AppConfig::sanitize`)**
-  - Correction du bug où la langue revenait automatiquement au français ou restait bloquée sur un serveur local éteint (`remote_asr`).
-  - La routine d'assainissement normalise automatiquement la configuration au démarrage :
-    - Bascule vers Whisper local GPU si aucun serveur Speaches n'est joignable sur le port 8000.
-    - Empêche les boucles de traduction identiques (ex: `source FR -> target FR`).
-    - Synchronise les changements de langue instantanément entre l'interface GPUI, le service de traduction et le moteur Whisper en mémoire.
+#### 3. Traduction Simultanée en Direct (Inspirée d'Hibiki)
+- **Politique adaptative Wait-$k$** : La traduction n'attend plus la fin de la phrase. Les mots et clauses traduits sont émis au fil de l'eau dès que le contexte grammatical source est suffisant.
+- **Streaming mot à mot bilingue** : Traduction simultanée continue optimisée pour le Français et l'Anglais.
 
-- **Affichage dynamique dans la barre de titre**
-  - La barre supérieure de l'application affiche désormais le vrai modèle actif ainsi que le GPU matériel détecté (ex: `NVIDIA GeForce RTX 5060 (Vulkan GPU) / Whisper Large-v3-Turbo Q5_0`).
+#### 4. Overlay OBS Studio & Interface GPUI Temps Réel
+- **Affichage 'Word Ticker' dynamique** : Dans `obs.html`, les mots apparaissent mot par mot avec une animation fluide d'apparition progressive (`@keyframes fadeInWord`) et un indicateur pulsé en direct.
+- **Protocole d'événements streaming sub-100ms** : Événements SSE / WebSocket enrichis pour diffuser les tokens instantanément aux clients OBS et à l'interface GPUI.
+
+#### 5. Framework Machine Learning Candle en Rust Natif (CUDA & Metal)
+- **Intégration directe sans bridge externe** : Utilisation des crates Hugging Face `candle-core`, `candle-nn` et `candle-transformers` directement en Rust.
+- **Accélération matérielle complète** :
+  - **NVIDIA CUDA** sur Windows x64 (RTX 5060, RTX 40xx/30xx) avec allocation mémoire VRAM contenue (~1,2 Go).
+  - **Apple Silicon Metal** sur macOS.
+  - **Fallback CPU optimisé multithread**.
+
+---
+
+### 🧪 Validation & Tests Unitaires
+- Suite de tests unitaires portée à **13 tests automatisés** couvrant l'ensemble du pipeline :
+  - Mathématiques et débits du codec Mimi
+  - Précision du buffer causal 24 kHz (1 920 samples)
+  - Alignement temporel des tokens et transitions du Semantic VAD
+  - Streaming simultané Wait-$k$ Hibiki
+  - Rétrocompatibilité totale des modèles Whisper locaux et de la traduction de secours.

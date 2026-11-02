@@ -21,6 +21,8 @@ pub struct PipelineEvent {
     pub translation_duration_ms: u128,
     pub total_duration_ms: u128,
     pub model_used: String,
+    #[serde(default)]
+    pub is_streaming: bool,
 }
 
 impl PipelineEvent {
@@ -47,6 +49,33 @@ impl PipelineEvent {
             translation_duration_ms: trans_ms,
             total_duration_ms: stt_ms + trans_ms,
             model_used,
+            is_streaming: false,
+        }
+    }
+
+    pub fn new_streaming(
+        word: String,
+        translated_word: String,
+        speaker: Option<String>,
+        source_lang: String,
+        target_lang: String,
+        stt_ms: u128,
+        model_used: String,
+    ) -> Self {
+        let now = Local::now();
+        Self {
+            id: format!("stream_{}", now.timestamp_millis()),
+            timestamp: now.format("%H:%M:%S").to_string(),
+            speaker,
+            original_text: word,
+            translated_text: translated_word,
+            source_lang,
+            target_lang,
+            stt_duration_ms: stt_ms,
+            translation_duration_ms: 0,
+            total_duration_ms: stt_ms,
+            model_used,
+            is_streaming: true,
         }
     }
 }
@@ -85,6 +114,8 @@ pub struct AppState {
     pub audio_device: String,
     pub config: Arc<RwLock<AppConfig>>,
     pub whisper_engine: Arc<Mutex<WhisperEngine>>,
+    pub kyutai_engine: Arc<Mutex<crate::stt::KyutaiStreamingSttEngine>>,
+    pub hibiki_translator: Arc<Mutex<crate::translate::HibikiStreamingTranslator>>,
     pub download_status: Arc<RwLock<DownloadStatus>>,
     pub translation_service: Arc<RwLock<TranslationService>>,
 }
@@ -100,6 +131,29 @@ impl AppState {
         download_status: Arc<RwLock<DownloadStatus>>,
         translation_service: Arc<RwLock<TranslationService>>,
     ) -> Self {
+        let candle_dev = crate::stt::kyutai_engine::resolve_candle_device(
+            config.stt.use_gpu,
+            config.stt.gpu_device,
+        );
+        let kyutai_config = crate::stt::KyutaiSttConfig {
+            model_id: "kyutai/stt-1b-en_fr".to_string(),
+            language: config.stt.language.clone(),
+            ..Default::default()
+        };
+        let kyutai_engine = Arc::new(Mutex::new(crate::stt::KyutaiStreamingSttEngine::new(
+            kyutai_config,
+            candle_dev,
+        )));
+
+        let hibiki_config = crate::translate::HibikiConfig {
+            source_lang: config.translation.source_lang.clone(),
+            target_lang: config.translation.target_lang.clone(),
+            ..Default::default()
+        };
+        let hibiki_translator = Arc::new(Mutex::new(
+            crate::translate::HibikiStreamingTranslator::new(hibiki_config),
+        ));
+
         Self {
             event_tx,
             history: Arc::new(RwLock::new(VecDeque::with_capacity(100))),
@@ -109,6 +163,8 @@ impl AppState {
             audio_device,
             config: Arc::new(RwLock::new(config)),
             whisper_engine,
+            kyutai_engine,
+            hibiki_translator,
             download_status,
             translation_service,
         }

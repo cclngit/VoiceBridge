@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VoiceBridge — OBS Subtitle Overlay</title>
+    <title>VoiceBridge — OBS Subtitle Overlay (Streaming Next-Gen)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap"
@@ -144,6 +144,22 @@
             -webkit-text-fill-color: transparent;
         }
 
+        .stream-word {
+            display: inline;
+            animation: fadeInWord 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .stream-pulse {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            margin-left: 6px;
+            background: #38bdf8;
+            border-radius: 50%;
+            vertical-align: middle;
+            animation: pulseGlow 1s infinite alternate;
+        }
+
         .hidden {
             opacity: 0 !important;
             transform: translateY(12px) !important;
@@ -170,6 +186,28 @@
             to {
                 opacity: 1;
                 transform: scale(1);
+            }
+        }
+
+        @keyframes fadeInWord {
+            from {
+                opacity: 0.2;
+                transform: translateY(2px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulseGlow {
+            from {
+                opacity: 0.3;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1.2);
             }
         }
     </style>
@@ -207,6 +245,7 @@
         subtitleBox.style.fontSize = `${fontSize}px`;
 
         let fadeTimer = null;
+        let isStreamingActive = false;
 
         function resetFadeTimer() {
             if (fadeTimer) clearTimeout(fadeTimer);
@@ -215,6 +254,7 @@
             if (fadeSeconds > 0) {
                 fadeTimer = setTimeout(() => {
                     container.classList.add('hidden');
+                    isStreamingActive = false;
                 }, fadeSeconds * 1000);
             }
         }
@@ -239,20 +279,40 @@
                 speakerContainer.appendChild(badge);
             }
 
+            const isStreaming = Boolean(event.is_streaming);
+
             // Text display depending on mode
             if (mode === 'dual') {
                 originalElem.style.display = 'block';
-                originalElem.textContent = event.original_text;
-                translatedElem.textContent = event.translated_text;
+                if (isStreaming) {
+                    originalElem.innerHTML = `<span class="stream-word">${escapeHtml(event.original_text)}</span>`;
+                    translatedElem.innerHTML = `<span class="stream-word">${escapeHtml(event.translated_text)}</span><span class="stream-pulse"></span>`;
+                } else {
+                    originalElem.textContent = event.original_text;
+                    translatedElem.textContent = event.translated_text;
+                }
             } else if (mode === 'source') {
                 originalElem.style.display = 'none';
-                translatedElem.textContent = event.original_text;
+                if (isStreaming) {
+                    translatedElem.innerHTML = `<span class="stream-word">${escapeHtml(event.original_text)}</span><span class="stream-pulse"></span>`;
+                } else {
+                    translatedElem.textContent = event.original_text;
+                }
             } else { // 'translated'
                 originalElem.style.display = 'none';
-                translatedElem.textContent = event.translated_text;
+                if (isStreaming) {
+                    translatedElem.innerHTML = `<span class="stream-word">${escapeHtml(event.translated_text)}</span><span class="stream-pulse"></span>`;
+                } else {
+                    translatedElem.textContent = event.translated_text;
+                }
             }
 
             resetFadeTimer();
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
         // Connect to SSE Stream

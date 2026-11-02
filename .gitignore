@@ -30,3 +30,7 @@
 *.swp
 *~
 /temps/
+
+# Local tooling & licenses cache
+.cargo/
+.licenses/

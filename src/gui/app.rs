@@ -266,10 +266,12 @@ impl VoiceBridgeApp {
                         this.latest_stt_ms = evt.stt_duration_ms;
                         this.latest_trans_ms = evt.translation_duration_ms;
 
-                        // Insert at the beginning of history
-                        this.history_entries.insert(0, evt);
-                        if this.history_entries.len() > 100 {
-                            this.history_entries.pop();
+                        // Only insert final non-streaming events into persistent history
+                        if !evt.is_streaming {
+                            this.history_entries.insert(0, evt);
+                            if this.history_entries.len() > 100 {
+                                this.history_entries.pop();
+                            }
                         }
                     }
                     cx.notify();
