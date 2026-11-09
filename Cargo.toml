@@ -6,7 +6,7 @@ build = "build.rs"
 description = "VoiceBridge — Real-time Speech-to-Text-to-Translate pipeline with local Metal/CUDA/Vulkan GPU acceleration, multi-model ASR, and OBS Studio transparent overlay."
 readme = "README.md"
 license = "MIT"
-keywords = ["speech-to-text", "whisper", "translation", "obs", "gpui"]
+keywords = ["speech-to-text", "whisper", "translation", "obs", "kyutai"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
@@ -17,12 +17,14 @@ cuda = [
     "candle-core/cuda",
     "candle-nn/cuda",
     "candle-transformers/cuda",
+    "moshi/cuda",
 ]
 metal = [
     "whisper-rs/metal",
     "candle-core/metal",
     "candle-nn/metal",
     "candle-transformers/metal",
+    "moshi/metal",
 ]
 vulkan = ["whisper-rs/vulkan"]
 hipblas = ["whisper-rs/hipblas"]
@@ -44,19 +46,29 @@ tokio-stream = { version = "0.1.19", features = ["sync"] }
 tower-http = { version = "0.7.1", features = ["cors", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-urlencoding = "2.1.3"
+url = "2.5.7"
 gpui-kit = "0.8.1"
 whisper-rs = { version = "0.16.0", features = ["raw-api"] }
 
-# Kyutai Moshi / Mimi / Candle ML stack
-candle-core = { version = "0.11.1", default-features = false }
-candle-nn = { version = "0.11.1", default-features = false }
-candle-transformers = { version = "0.11.1", default-features = false }
-safetensors = "0.8.0"
+# Kyutai (Moshi / Mimi / STT / Hibiki) + MADLAD-400 local translation — Candle ML stack.
+# Candle is pinned to the 0.9 series required by the official `moshi` crate so tensors
+# and devices can be shared between Kyutai models and the local T5 translator.
+candle-core = { version = "0.9.1", default-features = false }
+candle-nn = { version = "0.9.1", default-features = false }
+candle-transformers = { version = "0.9.1", default-features = false }
+moshi = "0.6.4"
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+rubato = "0.16.2"
+sha2 = "0.10.9"
+toml = "0.9.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16.0", features = ["metal", "raw-api"] }
+# Metal acceleration for Kyutai STT / Hibiki / MADLAD on Apple Silicon.
+candle-core = { version = "0.9.1", default-features = false, features = ["metal"] }
+candle-nn = { version = "0.9.1", default-features = false, features = ["metal"] }
+candle-transformers = { version = "0.9.1", default-features = false, features = ["metal"] }
+moshi = { version = "0.6.4", features = ["metal"] }
 
 [build-dependencies]
 embed-resource = "3.0.12"

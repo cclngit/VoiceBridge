@@ -13,6 +13,8 @@
 /models/*.part
 /models/*-distilled*
 /models/faster-whisper*
+# Kyutai / Hibiki / MADLAD model directories
+/models/*/
 
 # Temporary & runtime files
 *.wav

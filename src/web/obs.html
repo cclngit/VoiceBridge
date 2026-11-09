@@ -5,10 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoiceBridge — OBS Subtitle Overlay (Streaming Next-Gen)</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap"
-        rel="stylesheet">
     <style>
         * {
             box-sizing: border-box;
@@ -280,17 +276,31 @@
             }
 
             const isStreaming = Boolean(event.is_streaming);
+            // Streaming partials only carry the stream being produced (source text for
+            // Kyutai STT, translation for Hibiki): keep the other line as it is.
+            if (isStreaming) {
+                const shown = mode === 'source' ? event.original_text : event.translated_text;
+                if (mode !== 'dual' && !shown) return;
+            }
 
             // Text display depending on mode
             if (mode === 'dual') {
                 originalElem.style.display = 'block';
                 if (isStreaming) {
-                    originalElem.innerHTML = `<span class="stream-word">${escapeHtml(event.original_text)}</span>`;
-                    translatedElem.innerHTML = `<span class="stream-word">${escapeHtml(event.translated_text)}</span><span class="stream-pulse"></span>`;
+                    if (event.original_text) {
+                        originalElem.innerHTML = `<span class="stream-word">${escapeHtml(event.original_text)}</span>`;
+                    }
+                    if (event.translated_text) {
+                        translatedElem.innerHTML = `<span class="stream-word">${escapeHtml(event.translated_text)}</span><span class="stream-pulse"></span>`;
+                    } else {
+                        translatedElem.innerHTML = '<span class="stream-pulse"></span>';
+                    }
                 } else {
                     originalElem.textContent = event.original_text;
                     translatedElem.textContent = event.translated_text;
                 }
+                // Hibiki produces the translation directly, without a source transcript.
+                originalElem.style.display = originalElem.textContent.trim() ? 'block' : 'none';
             } else if (mode === 'source') {
                 originalElem.style.display = 'none';
                 if (isStreaming) {

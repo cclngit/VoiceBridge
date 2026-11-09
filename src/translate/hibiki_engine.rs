@@ -1,218 +1,227 @@
-use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::time::Instant;
+//! Kyutai Hibiki — real-time simultaneous speech translation (French → English),
+//! running in-process with Candle through the official `moshi` crate and the
+//! `kyutai/hibiki-1b-rs-bf16` / `kyutai/hibiki-2b-rs-bf16` weights.
+//!
+//! Hibiki listens to 24 kHz French speech in 80 ms frames and produces the English
+//! translation as a text stream (alongside translated speech tokens, which are
+//! generated because the model needs them but are not decoded to audio here).
 
-/// Update emitted by the Hibiki streaming simultaneous translation engine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StreamingTranslationUpdate {
-    /// Newly translated word or clause
-    pub translated_chunk: String,
-    /// Accumulated translated text for the current sentence/turn
-    pub full_translated_text: String,
-    /// Source language code (e.g. "fr")
-    pub source_lang: String,
-    /// Target language code (e.g. "en")
-    pub target_lang: String,
-    /// Measured translation latency in milliseconds
-    pub latency_ms: u128,
-    /// Whether this chunk finalizes a complete sentence or thought
-    pub is_final: bool,
+use crate::ml::spm::SentencePieceDecoder;
+use candle_core::{Device, IndexOp, Tensor};
+use candle_transformers::generation::{LogitsProcessor, Sampling};
+use std::path::{Path, PathBuf};
+
+pub const SAMPLE_RATE: u32 = 24_000;
+pub const FRAME_SAMPLES: usize = 1920;
+
+/// Steps allocated per session (2500 steps = 200 s); the session is recycled before.
+const MAX_SESSION_STEPS: usize = 2500;
+/// Recycle the session once this many steps have elapsed and the speaker is silent.
+const RECYCLE_AFTER_STEPS: usize = 1500;
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct HibikiFileConfig {
+    mimi_name: String,
+    moshi_name: String,
+    tokenizer_name: String,
+    model: moshi::lm::Config,
 }
 
-/// Configuration for the streaming simultaneous translator
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HibikiConfig {
-    /// Wait-k parameter: number of source words to accumulate before starting translation
-    pub wait_k: usize,
-    /// Default source language
-    pub source_lang: String,
-    /// Default target language
-    pub target_lang: String,
-    /// Maximum context window in words before triggering eager emission
-    pub max_context_words: usize,
+pub fn required_files(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), String> {
+    let config_path = dir.join("config.toml");
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    let cfg: HibikiFileConfig =
+        toml::from_str(&raw).map_err(|e| format!("invalid Hibiki config: {e}"))?;
+    Ok((
+        config_path,
+        dir.join(&cfg.moshi_name),
+        dir.join(&cfg.mimi_name),
+        dir.join(&cfg.tokenizer_name),
+    ))
 }
 
-impl Default for HibikiConfig {
-    fn default() -> Self {
-        Self {
-            wait_k: 3, // Start translating after 3 source words
-            source_lang: "fr".to_string(),
-            target_lang: "en".to_string(),
-            max_context_words: 8,
-        }
-    }
+pub struct HibikiTranslator {
+    base_model: moshi::lm::LmModel,
+    mimi: moshi::mimi::Mimi,
+    tokenizer: SentencePieceDecoder,
+    device: Device,
+    gen_config: moshi::lm_generate_multistream::Config,
+    conditions: Option<moshi::conditioner::Condition>,
+    state: moshi::lm_generate_multistream::State,
+    prev_text_token: u32,
+    pending: Vec<f32>,
+    session_steps: usize,
+    seed: u64,
 }
 
-/// Streaming Simultaneous Translator (Hibiki-inspired)
-/// Translates streaming speech tokens/words chunk-by-chunk with adaptive context accumulation.
-pub struct HibikiStreamingTranslator {
-    config: HibikiConfig,
-    pending_source_words: VecDeque<String>,
-    accumulated_source_text: String,
-    accumulated_target_text: String,
-    #[allow(dead_code)]
-    last_translated_source_idx: usize,
-    turn_start_time: Instant,
-}
-
-#[allow(dead_code)]
-impl HibikiStreamingTranslator {
-    pub fn new(config: HibikiConfig) -> Self {
-        Self {
-            config,
-            pending_source_words: VecDeque::new(),
-            accumulated_source_text: String::new(),
-            accumulated_target_text: String::new(),
-            last_translated_source_idx: 0,
-            turn_start_time: Instant::now(),
-        }
-    }
-
-    pub fn config(&self) -> &HibikiConfig {
-        &self.config
-    }
-
-    /// Feeds a newly arrived source word from the STT stream.
-    /// If enough context has accumulated (Wait-k or clause boundary), returns a translation update.
-    pub fn feed_source_word(
-        &mut self,
-        word: &str,
-        is_final_word: bool,
-    ) -> Option<StreamingTranslationUpdate> {
-        let trimmed = word.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        self.pending_source_words.push_back(trimmed.to_string());
-        if !self.accumulated_source_text.is_empty() {
-            self.accumulated_source_text.push(' ');
-        }
-        self.accumulated_source_text.push_str(trimmed);
-
-        let pending_count = self.pending_source_words.len();
-        let is_clause_end = trimmed.ends_with('.')
-            || trimmed.ends_with('!')
-            || trimmed.ends_with('?')
-            || trimmed.ends_with(',');
-
-        // Trigger translation if:
-        // 1. We reached wait_k words
-        // 2. We hit a clause boundary
-        // 3. The word finalizes the current turn
-        // 4. We hit max context words
-        if pending_count >= self.config.wait_k
-            || is_clause_end
-            || is_final_word
-            || pending_count >= self.config.max_context_words
-        {
-            let mut words_to_translate = Vec::new();
-            while let Some(w) = self.pending_source_words.pop_front() {
-                words_to_translate.push(w);
+impl HibikiTranslator {
+    pub fn load(dir: &Path, device: &Device) -> Result<Self, String> {
+        let (config_path, lm_path, mimi_path, tokenizer_path) = required_files(dir)?;
+        let raw = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let cfg: HibikiFileConfig = toml::from_str(&raw).map_err(|e| e.to_string())?;
+        for p in [&lm_path, &mimi_path, &tokenizer_path] {
+            if !p.is_file() {
+                return Err(format!("missing model file {}", p.display()));
             }
-
-            if words_to_translate.is_empty() {
-                return None;
-            }
-
-            let source_clause = words_to_translate.join(" ");
-            let translated_clause = self.translate_clause(
-                &source_clause,
-                &self.config.source_lang,
-                &self.config.target_lang,
-            );
-
-            if !self.accumulated_target_text.is_empty() {
-                self.accumulated_target_text.push(' ');
-            }
-            self.accumulated_target_text.push_str(&translated_clause);
-
-            let latency_ms = self.turn_start_time.elapsed().as_millis();
-
-            Some(StreamingTranslationUpdate {
-                translated_chunk: translated_clause,
-                full_translated_text: self.accumulated_target_text.clone(),
-                source_lang: self.config.source_lang.clone(),
-                target_lang: self.config.target_lang.clone(),
-                latency_ms,
-                is_final: is_final_word || is_clause_end,
-            })
-        } else {
-            None
         }
+
+        let dtype = device.bf16_default_to_f32();
+        let base_model = moshi::lm::load_lm_model(cfg.model.clone(), &lm_path, dtype, device)
+            .map_err(|e| format!("cannot load Hibiki LM: {e}"))?;
+        let generated_audio_codebooks = cfg.model.depformer.as_ref().map_or(8, |d| d.num_slices);
+        let mimi_path_str = mimi_path.to_str().ok_or("non UTF-8 model path")?;
+        let mimi = moshi::mimi::load(mimi_path_str, Some(generated_audio_codebooks), device)
+            .map_err(|e| format!("cannot load Mimi codec: {e}"))?;
+        let tokenizer = SentencePieceDecoder::open(&tokenizer_path)?;
+
+        let conditions = match base_model.condition_provider() {
+            None => None,
+            Some(cp) => Some(
+                cp.condition_lut("description", "very_good")
+                    .map_err(|e| format!("cannot build Hibiki condition: {e}"))?,
+            ),
+        };
+        let gen_config = moshi::lm_generate_multistream::Config {
+            acoustic_delay: 2,
+            audio_vocab_size: cfg.model.audio_vocab_size,
+            generated_audio_codebooks,
+            input_audio_codebooks: cfg.model.audio_codebooks - generated_audio_codebooks,
+            text_start_token: cfg.model.text_out_vocab_size as u32,
+            text_eop_token: 0,
+            text_pad_token: 3,
+        };
+        let seed = 299_792_458;
+        let state = Self::new_state(&base_model, &gen_config, seed);
+        let prev_text_token = gen_config.text_start_token;
+        Ok(Self {
+            base_model,
+            mimi,
+            tokenizer,
+            device: device.clone(),
+            gen_config,
+            conditions,
+            state,
+            prev_text_token,
+            pending: Vec::with_capacity(FRAME_SAMPLES * 4),
+            session_steps: 0,
+            seed,
+        })
     }
 
-    /// Fast local simultaneous translation mapping
-    fn translate_clause(&self, text: &str, source: &str, target: &str) -> String {
-        let src_clean = text.trim();
-        let src_lower = src_clean.to_lowercase();
+    fn new_state(
+        model: &moshi::lm::LmModel,
+        config: &moshi::lm_generate_multistream::Config,
+        seed: u64,
+    ) -> moshi::lm_generate_multistream::State {
+        let mut model = model.clone();
+        model.reset_state();
+        // Sampling parameters from the reference hibiki-rs implementation.
+        let audio_lp = LogitsProcessor::from_sampling(
+            seed,
+            Sampling::TopK { k: 250, temperature: 0.8 },
+        );
+        let text_lp = LogitsProcessor::from_sampling(
+            seed,
+            Sampling::TopK { k: 25, temperature: 0.8 },
+        );
+        moshi::lm_generate_multistream::State::new(
+            model,
+            MAX_SESSION_STEPS + 20,
+            audio_lp,
+            text_lp,
+            None,
+            None,
+            None,
+            config.clone(),
+        )
+    }
 
-        if source.starts_with("fr") && target.starts_with("en") {
-            match src_lower.as_str() {
-                "bonjour" => "Hello".to_string(),
-                "bonjour je suis" => "Hello I am".to_string(),
-                "en direct sur voicebridge" => "live on VoiceBridge".to_string(),
-                "et tout fonctionne" => "and everything works".to_string(),
-                "parfaitement." => "perfectly.".to_string(),
-                "merci beaucoup" => "thank you very much".to_string(),
-                _ => {
-                    // Fallback word replacement dictionary for streaming
-                    let words: Vec<&str> = src_clean.split_whitespace().collect();
-                    let translated_words: Vec<String> = words
-                        .into_iter()
-                        .map(|w| match w.to_lowercase().as_str() {
-                            "bonjour" => "Hello".to_string(),
-                            "je" => "I".to_string(),
-                            "suis" => "am".to_string(),
-                            "en" => "in".to_string(),
-                            "direct" => "live".to_string(),
-                            "sur" => "on".to_string(),
-                            "voicebridge" => "VoiceBridge".to_string(),
-                            "et" => "and".to_string(),
-                            "tout" => "everything".to_string(),
-                            "fonctionne" => "works".to_string(),
-                            "bien" => "well".to_string(),
-                            "parfaitement" => "perfectly".to_string(),
-                            "merci" => "thank you".to_string(),
-                            other => other.to_string(),
-                        })
-                        .collect();
-                    translated_words.join(" ")
+    /// Start a fresh translation session (clears the model and codec states).
+    pub fn reset(&mut self) {
+        self.seed = self.seed.wrapping_add(1);
+        self.state = Self::new_state(&self.base_model, &self.gen_config, self.seed);
+        self.mimi.reset_state();
+        self.prev_text_token = self.gen_config.text_start_token;
+        self.pending.clear();
+        self.session_steps = 0;
+    }
+
+    pub fn session_steps(&self) -> usize {
+        self.session_steps
+    }
+
+    /// Whether the session should be recycled now (long session and speaker silent).
+    pub fn should_recycle(&self, silent: bool) -> bool {
+        (silent && self.session_steps >= RECYCLE_AFTER_STEPS)
+            || self.session_steps >= MAX_SESSION_STEPS
+    }
+
+    /// Feed 24 kHz mono French speech and return newly produced English text pieces.
+    pub fn push_pcm(&mut self, pcm: &[f32]) -> Result<Vec<String>, String> {
+        self.pending.extend_from_slice(pcm);
+        let mut out = Vec::new();
+        let mut offset = 0;
+        while self.pending.len() - offset >= FRAME_SAMPLES {
+            if self.session_steps >= MAX_SESSION_STEPS {
+                self.pending.drain(..offset);
+                offset = 0;
+                tracing::info!("Hibiki: session length limit reached, starting a new session.");
+                let keep = std::mem::take(&mut self.pending);
+                self.reset();
+                self.pending = keep;
+                continue;
+            }
+            let frame = &self.pending[offset..offset + FRAME_SAMPLES];
+            offset += FRAME_SAMPLES;
+            let pcm = Tensor::new(frame, &self.device)
+                .and_then(|t| t.reshape((1, 1, FRAME_SAMPLES)))
+                .map_err(|e| e.to_string())?;
+            let codes = self
+                .mimi
+                .encode_step(&pcm.into(), &().into())
+                .map_err(|e| format!("Mimi encoding error: {e}"))?;
+            let Some(codes) = codes.as_option() else {
+                continue;
+            };
+            let (_b, _q, steps) = codes.dims3().map_err(|e| e.to_string())?;
+            for step in 0..steps {
+                let step_codes = codes
+                    .i((0, .., step))
+                    .and_then(|t| t.to_vec1::<u32>())
+                    .map_err(|e| e.to_string())?;
+                let text_token = self
+                    .state
+                    .step_(
+                        Some(self.prev_text_token),
+                        &step_codes,
+                        None,
+                        None,
+                        self.conditions.as_ref(),
+                    )
+                    .map_err(|e| format!("Hibiki inference error: {e}"))?;
+                self.session_steps += 1;
+                if text_token != self.gen_config.text_eop_token
+                    && text_token != self.gen_config.text_pad_token
+                    && text_token != self.gen_config.text_start_token
+                {
+                    let piece = self.tokenizer.decode_piece(text_token);
+                    if !piece.is_empty() {
+                        out.push(piece);
+                    }
                 }
+                self.prev_text_token = text_token;
             }
-        } else if source.starts_with("en") && target.starts_with("fr") {
-            let words: Vec<&str> = src_clean.split_whitespace().collect();
-            let translated_words: Vec<String> = words
-                .into_iter()
-                .map(|w| match w.to_lowercase().as_str() {
-                    "hello" => "Bonjour".to_string(),
-                    "i" => "je".to_string(),
-                    "am" => "suis".to_string(),
-                    "live" => "en direct".to_string(),
-                    "on" => "sur".to_string(),
-                    "voicebridge" => "VoiceBridge".to_string(),
-                    "and" => "et".to_string(),
-                    "everything" => "tout".to_string(),
-                    "is" => "est".to_string(),
-                    "working" => "fonctionne".to_string(),
-                    "working." => "fonctionne.".to_string(),
-                    "thank" => "merci".to_string(),
-                    other => other.to_string(),
-                })
-                .collect();
-            translated_words.join(" ")
-        } else {
-            src_clean.to_string()
         }
+        self.pending.drain(..offset);
+        Ok(out)
     }
 
-    /// Resets translator state for a new conversational turn
-    pub fn reset_turn(&mut self) {
-        self.pending_source_words.clear();
-        self.accumulated_source_text.clear();
-        self.accumulated_target_text.clear();
-        self.last_translated_source_idx = 0;
-        self.turn_start_time = Instant::now();
+    /// Feed silence so the translation of the last words (Hibiki lags a few seconds
+    /// behind the speaker) is produced.
+    pub fn flush(&mut self, seconds: f32) -> Result<Vec<String>, String> {
+        let n = (seconds.max(0.0) * SAMPLE_RATE as f32) as usize;
+        self.push_pcm(&vec![0.0; n])
     }
 }
 
@@ -220,37 +229,39 @@ impl HibikiStreamingTranslator {
 mod tests {
     use super::*;
 
+    /// Real-model test — needs `models/hibiki-1b-rs-bf16` and a French WAV file:
+    /// `VB_TEST_WAV_FR=/path/fr.wav cargo test --release -- --ignored hibiki`
     #[test]
-    fn test_hibiki_wait_k_streaming() {
-        let config = HibikiConfig {
-            wait_k: 3,
-            source_lang: "fr".to_string(),
-            target_lang: "en".to_string(),
-            max_context_words: 6,
-        };
-        let mut translator = HibikiStreamingTranslator::new(config);
+    #[ignore]
+    fn hibiki_translates_french_speech_to_english() {
+        let wav = std::env::var("VB_TEST_WAV_FR").expect("set VB_TEST_WAV_FR");
+        let (pcm, rate) = crate::audio::wav::read_wav_mono(Path::new(&wav)).unwrap();
+        let pcm24 = crate::audio::resampler::resample_buffer(&pcm, rate, SAMPLE_RATE);
+        let device = crate::ml::resolve_device(crate::ml::DeviceSlot::Streaming, std::env::var("VB_TEST_CPU").is_err(), 0);
+        let t0 = std::time::Instant::now();
+        let mut hibiki = HibikiTranslator::load(Path::new("models/hibiki-1b-rs-bf16"), &device).unwrap();
+        println!("loaded on {} in {:?}", crate::ml::device_label(&device), t0.elapsed());
+        let t0 = std::time::Instant::now();
+        let mut text = String::new();
+        for block in pcm24.chunks(1000) {
+            for piece in hibiki.push_pcm(block).unwrap() {
+                text.push_str(&piece);
+            }
+        }
+        for piece in hibiki.flush(4.0).unwrap() {
+            text.push_str(&piece);
+        }
+        let audio_s = pcm24.len() as f32 / SAMPLE_RATE as f32 + 4.0;
+        let el = t0.elapsed().as_secs_f32();
+        println!("translation: {}\nRTF: {:.2} ({el:.1}s for {audio_s:.1}s)", text.trim(), el / audio_s);
+        let lower = text.to_lowercase();
+        assert!(lower.contains("hello") || lower.contains("everyone") || lower.contains("today"), "{text}");
+        assert!(lower.contains("translation") || lower.contains("sound") || lower.contains("quality"), "{text}");
 
-        // Word 1: "Bonjour" -> below wait_k (3), returns None
-        assert!(translator.feed_source_word("Bonjour", false).is_none());
-
-        // Word 2: "je" -> below wait_k (3), returns None
-        assert!(translator.feed_source_word("je", false).is_none());
-
-        // Word 3: "suis" -> reaches wait_k (3), produces translated chunk!
-        let update = translator
-            .feed_source_word("suis", false)
-            .expect("wait_k should trigger translation");
-
-        assert_eq!(update.translated_chunk, "Hello I am");
-        assert_eq!(update.source_lang, "fr");
-        assert_eq!(update.target_lang, "en");
-        assert!(!update.is_final);
-
-        // Word with punctuation: "parfaitement." -> triggers clause end
-        let update2 = translator
-            .feed_source_word("parfaitement.", true)
-            .expect("final word should trigger translation");
-        assert_eq!(update2.translated_chunk, "perfectly.");
-        assert!(update2.is_final);
+        // A new session after reset must work as well.
+        hibiki.reset();
+        assert_eq!(hibiki.session_steps(), 0);
+        let _ = hibiki.push_pcm(&pcm24[..SAMPLE_RATE as usize]).unwrap();
+        assert!(hibiki.session_steps() > 0);
     }
 }

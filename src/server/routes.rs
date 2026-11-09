@@ -1,15 +1,15 @@
 use super::state::{AppState, PipelineEvent, SystemStatus};
 use crate::audio::{AudioDeviceManager, DeviceInfo};
 use crate::config::AppConfig;
-use crate::stt::{
-    download_model_with_progress, find_model, get_available_models, is_model_installed,
-    DownloadStatus, ModelMetadata,
-};
+use crate::controller::ActivationOutcome;
+use crate::stt::{get_available_models, is_model_installed, DownloadStatus, ModelMetadata};
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    http::{header, HeaderMap, Method, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html,
+        Html, IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -21,7 +21,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use tower_http::cors::CorsLayer;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const OBS_HTML: &str = include_str!("../web/obs.html");
@@ -39,12 +38,94 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/models", get(get_models_handler))
         .route("/api/models/switch", post(switch_model_handler))
         .route("/api/models/download-progress", get(download_progress_handler))
+        .route("/api/translation/engine", post(translation_engine_handler))
         .route("/api/devices", get(get_devices_handler))
         .route("/api/toggle-mic", post(toggle_mic_handler))
         .route("/api/test-stt", post(test_stt_handler))
-        .layer(CorsLayer::permissive())
+        // No CORS layer on purpose: the UI and the OBS overlay are served from this
+        // same origin, and other websites must not be able to drive the API.
+        .layer(middleware::from_fn_with_state(state.clone(), local_request_guard))
         .with_state(state)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Security: only same-origin requests addressed to this machine are accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+}
+
+/// Host names this server legitimately answers to (blocks DNS-rebinding attacks).
+fn is_allowed_host(host: &str, configured_host: &str) -> bool {
+    let h = host_without_port(host).to_ascii_lowercase();
+    if matches!(h.as_str(), "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+    if !configured_host.is_empty() && h == configured_host.to_ascii_lowercase() {
+        return true;
+    }
+    // When bound to all interfaces, accept private LAN addresses (e.g. OBS on another PC).
+    if matches!(configured_host, "0.0.0.0" | "::")
+        && let Ok(ip) = h.parse::<std::net::IpAddr>()
+    {
+        return crate::netpolicy::is_local_ip(ip);
+    }
+    false
+}
+
+/// Decide whether a request may proceed. Returns an error message otherwise.
+pub(crate) fn check_request(method: &Method, headers: &HeaderMap, configured_host: &str) -> Result<(), &'static str> {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !is_allowed_host(host, configured_host) {
+        return Err("Hôte non autorisé");
+    }
+    let state_changing = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
+    // Browsers tag cross-site requests; reject them for every API call.
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok())
+        && !matches!(site, "same-origin" | "none")
+        && (state_changing || site == "cross-site")
+    {
+        return Err("Requête inter-sites refusée");
+    }
+    if state_changing {
+        match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+            // Non-browser clients (curl, scripts) send no Origin header.
+            None => {}
+            Some(origin) => {
+                let origin_host = origin
+                    .strip_prefix("http://")
+                    .or_else(|| origin.strip_prefix("https://"))
+                    .unwrap_or("");
+                if origin_host != host {
+                    return Err("Origine non autorisée");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn local_request_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let configured_host = state.config.read().await.server.host.clone();
+    if let Err(reason) = check_request(req.method(), req.headers(), &configured_host) {
+        tracing::warn!(
+            "Requête HTTP refusée ({}) : {} {} (Host={:?}, Origin={:?})",
+            reason,
+            req.method(),
+            req.uri().path(),
+            req.headers().get(header::HOST),
+            req.headers().get(header::ORIGIN)
+        );
+        return (StatusCode::FORBIDDEN, reason).into_response();
+    }
+    next.run(req).await
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async fn index_handler() -> Html<&'static str> {
     Html(INDEX_HTML)
@@ -64,82 +145,41 @@ async fn status_handler(State(state): State<AppState>) -> Json<SystemStatus> {
 
 async fn history_handler(State(state): State<AppState>) -> Json<Vec<PipelineEvent>> {
     let history = state.history.read().await;
-    let list: Vec<PipelineEvent> = history.iter().cloned().collect();
-    Json(list)
+    Json(history.iter().cloned().collect())
 }
 
 async fn toggle_mic_handler(State(state): State<AppState>) -> Json<SystemStatus> {
-    let current = state.is_recording.load(Ordering::Relaxed);
-    state.is_recording.store(!current, Ordering::Relaxed);
+    state.is_recording.fetch_xor(true, Ordering::Relaxed);
     Json(state.get_status().await)
 }
 
 async fn get_config_handler(State(state): State<AppState>) -> Json<AppConfig> {
-    let cfg = state.config.read().await.clone();
-    Json(cfg)
+    Json(state.config.read().await.redacted())
+}
+
+#[derive(Serialize)]
+struct ConfigUpdateResponse {
+    success: bool,
+    message: String,
+    status: SystemStatus,
 }
 
 async fn update_config_handler(
     State(state): State<AppState>,
-    Json(mut new_config): Json<AppConfig>,
-) -> Json<SystemStatus> {
-    // Synchronize chosen source language between STT and Translation
-    let chosen_source_lang = if !new_config.stt.language.is_empty() {
-        new_config.stt.language.clone()
-    } else if !new_config.translation.source_lang.is_empty() {
-        new_config.translation.source_lang.clone()
-    } else {
-        "auto".to_string()
-    };
-    new_config.stt.language = chosen_source_lang.clone();
-    new_config.translation.source_lang = chosen_source_lang.clone();
-
-    let hw_changed = {
-        let old = state.config.read().await;
-        old.stt.use_gpu != new_config.stt.use_gpu
-            || old.stt.gpu_backend != new_config.stt.gpu_backend
-            || old.stt.gpu_device != new_config.stt.gpu_device
-            || old.stt.flash_attn != new_config.stt.flash_attn
-    };
-
-    // Immediately update live Whisper engine in memory
-    {
-        let mut engine = state.whisper_engine.lock().await;
-        engine.set_language(&chosen_source_lang);
-        engine.set_n_threads(new_config.stt.n_threads);
-        if hw_changed {
-            let _ = engine.apply_hardware_settings(
-                new_config.stt.use_gpu,
-                &new_config.stt.gpu_backend,
-                new_config.stt.gpu_device,
-                new_config.stt.flash_attn,
-                new_config.stt.n_threads,
-            );
-        }
-        tracing::info!("Whisper STT config updated (lang='{}', use_gpu={}, backend='{}', device={})",
-            chosen_source_lang,
-            new_config.stt.use_gpu,
-            new_config.stt.gpu_backend,
-            new_config.stt.gpu_device
-        );
+    Json(new_config): Json<AppConfig>,
+) -> (StatusCode, Json<ConfigUpdateResponse>) {
+    let res = state.apply_config(new_config).await;
+    let status = state.get_status().await;
+    match res {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(ConfigUpdateResponse { success: true, message: "Réglages appliqués.".into(), status }),
+        ),
+        Err(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(ConfigUpdateResponse { success: false, message, status }),
+        ),
     }
-
-    {
-        let mut cfg = state.config.write().await;
-        *cfg = new_config.clone();
-    }
-    {
-        let mut trans = state.translation_service.write().await;
-        trans.enabled = new_config.translation.enabled;
-        trans.source_lang = new_config.translation.source_lang.clone();
-        trans.target_lang = new_config.translation.target_lang.clone();
-        trans.engine = new_config.translation.engine.clone();
-        trans.local_api_url = new_config.translation.local_api_url.clone();
-        trans.model_name = new_config.translation.model_name.clone();
-        trans.api_key = new_config.translation.api_key.clone();
-    }
-    let _ = new_config.save_to_file("config.json");
-    Json(state.get_status().await)
 }
 
 #[derive(Serialize)]
@@ -151,25 +191,25 @@ pub struct ModelCatalogItem {
 }
 
 async fn get_models_handler(State(state): State<AppState>) -> Json<Vec<ModelCatalogItem>> {
-    let cfg = state.config.read().await;
+    let cfg = state.config.read().await.clone();
     let items = get_available_models()
         .into_iter()
         .map(|m| {
             let installed = is_model_installed(&m);
-            let active = cfg.stt.model_id == m.id;
-            ModelCatalogItem {
-                metadata: m,
-                is_installed: installed,
-                is_active: active,
-            }
+            let active = if m.kind == crate::stt::models::KIND_TRANSLATION {
+                cfg.translation.engine == crate::stt::models::ENGINE_MADLAD
+                    && cfg.translation.madlad_model_dir == m.default_model_name
+            } else {
+                cfg.stt.model_id == m.id && cfg.stt.engine_type == m.default_engine
+            };
+            ModelCatalogItem { metadata: m, is_installed: installed, is_active: active }
         })
         .collect();
     Json(items)
 }
 
 async fn download_progress_handler(State(state): State<AppState>) -> Json<DownloadStatus> {
-    let status = state.download_status.read().await.clone();
-    Json(status)
+    Json(state.download_status.read().await.clone())
 }
 
 #[derive(Deserialize)]
@@ -179,218 +219,28 @@ pub struct SwitchModelRequest {
     pub api_key: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct SwitchModelResponse {
-    pub success: bool,
-    pub status: String, // "ready", "downloading", "offline", "error"
-    pub message: String,
-    pub model_id: String,
-}
-
 async fn switch_model_handler(
     State(state): State<AppState>,
     Json(payload): Json<SwitchModelRequest>,
-) -> Json<SwitchModelResponse> {
-    let model = match find_model(&payload.model_id) {
-        Some(m) => m,
-        None => {
-            return Json(SwitchModelResponse {
-                success: false,
-                status: "error".to_string(),
-                message: format!("Modèle inconnu : {}", payload.model_id),
-                model_id: payload.model_id,
-            });
-        }
-    };
-
-    if model.default_engine == "kyutai_streaming" || model.default_engine == "hibiki_streaming" {
-        let mut cfg = state.config.write().await;
-        cfg.stt.engine_type = model.default_engine.clone();
-        cfg.stt.model_id = payload.model_id.clone();
-        cfg.stt.model_name = model.name.clone();
-        cfg.stt.model_path = model.default_model_name.clone();
-        if let Some(ref url) = model.download_url {
-            cfg.stt.model_url = url.clone();
-        }
-        let _ = cfg.save_to_file("config.json");
-
-        return Json(SwitchModelResponse {
-            success: true,
-            status: "ready".to_string(),
-            message: format!("{} activé en mode Streaming temps réel (Moshi / Delayed Streams).", model.name),
-            model_id: payload.model_id,
-        });
-    }
-
-    if model.is_local_gpu {
-        let model_path = model.default_model_name.clone();
-
-        if is_model_installed(&model) {
-            // Already installed: hot reload directly on configured GPU/CPU
-            let mut engine = state.whisper_engine.lock().await;
-            match engine.reload_model(&model_path) {
-                Ok(_) => {
-                    let active_hw = engine.active_hardware_label().to_string();
-                    drop(engine);
-                    let mut cfg = state.config.write().await;
-                    cfg.stt.engine_type = "whisper_local".to_string();
-                    cfg.stt.model_id = payload.model_id.clone();
-                    cfg.stt.model_path = model_path;
-                    if let Some(ref url) = model.download_url {
-                        cfg.stt.model_url = url.clone();
-                    }
-                    cfg.stt.model_name = model.name.clone();
-                    let _ = cfg.save_to_file("config.json");
-
-                    return Json(SwitchModelResponse {
-                        success: true,
-                        status: "ready".to_string(),
-                        message: format!(
-                            "{} activé ({}).",
-                            model.name,
-                            active_hw
-                        ),
-                        model_id: payload.model_id,
-                    });
-                }
-                Err(e) => {
-                    return Json(SwitchModelResponse {
-                        success: false,
-                        status: "error".to_string(),
-                        message: format!("Erreur rechargement GPU : {}", e),
-                        model_id: payload.model_id,
-                    });
-                }
-            }
-        }
-
-        // Needs download first
-        let is_dl = state.download_status.read().await.is_downloading;
-        if is_dl {
-            return Json(SwitchModelResponse {
-                success: false,
-                status: "downloading".to_string(),
-                message: "Un téléchargement est déjà en cours.".to_string(),
-                model_id: payload.model_id,
-            });
-        }
-
-        let download_url = match model.download_url {
-            Some(u) => u,
-            None => {
-                return Json(SwitchModelResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    message: "Aucune URL de téléchargement pour ce modèle.".to_string(),
-                    model_id: payload.model_id,
-                });
-            }
-        };
-
-        let status_tracker = state.download_status.clone();
-        let whisper = state.whisper_engine.clone();
-        let config = state.config.clone();
-        let model_id = payload.model_id.clone();
-        let model_name = model.name.clone();
-        let path_clone = model_path.clone();
-        let url_clone = download_url.clone();
-
-        tokio::spawn(async move {
-            let hw = crate::stt::active_whisper_backend_label();
-            tracing::info!("Starting background download of {}...", model_name);
-            match download_model_with_progress(&path_clone, &download_url, &model_id, status_tracker.clone()).await {
-                Ok(_) => {
-                    tracing::info!("Model download complete. Reloading on {}...", hw);
-                    let mut engine = whisper.lock().await;
-                    if let Err(e) = engine.reload_model(&path_clone) {
-                        tracing::error!("Failed to reload model after download: {}", e);
-                        let mut st = status_tracker.write().await;
-                        st.error = Some(format!("Erreur ({}) : {}", hw, e));
-                        return;
-                    }
-
-                    let mut cfg = config.write().await;
-                    cfg.stt.engine_type = "whisper_local".to_string();
-                    cfg.stt.model_id = model_id;
-                    cfg.stt.model_path = path_clone;
-                    cfg.stt.model_url = url_clone;
-                    cfg.stt.model_name = model_name.clone();
-                    let _ = cfg.save_to_file("config.json");
-                    tracing::info!("Model {} is now active on {}.", model_name, hw);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to download model: {}", e);
-                }
-            }
-        });
-
-        return Json(SwitchModelResponse {
-            success: true,
-            status: "downloading".to_string(),
-            message: format!("Téléchargement de {} ({} Mo) lancé...", model.name, model.file_size_mb),
-            model_id: payload.model_id,
-        });
-    }
-
-    // Remote ASR Model (Qwen3, Voxtral, Canary, VibeVoice, etc.)
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .unwrap_or_default();
-
-    let target_url = payload
-        .api_url
-        .as_deref()
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| {
-            if !model.default_api_url.is_empty() {
-                &model.default_api_url
-            } else {
-                "http://127.0.0.1:8000/v1/audio/transcriptions"
-            }
-        });
-
-    let mut req = client.get(target_url);
-    if let Some(ref key) = payload.api_key {
-        if !key.trim().is_empty() {
-            req = req.bearer_auth(key);
-        }
-    }
-
-    match req.send().await {
-        Ok(_) => {
-            let mut cfg = state.config.write().await;
-            cfg.stt.engine_type = "remote_api".to_string();
-            cfg.stt.model_id = payload.model_id.clone();
-            cfg.stt.model_name = model.default_model_name.clone();
-            cfg.stt.api_url = target_url.to_string();
-            cfg.stt.api_key = payload.api_key.clone();
-            let _ = cfg.save_to_file("config.json");
-
-            Json(SwitchModelResponse {
-                success: true,
-                status: "ready".to_string(),
-                message: format!("Modèle distant {} connecté et actif sur {}.", model.name, target_url),
-                model_id: payload.model_id,
-            })
-        }
-        Err(e) => {
-            tracing::warn!("Remote ASR unreachable on {}: {}", target_url, e);
-            Json(SwitchModelResponse {
-                success: false,
-                status: "offline".to_string(),
-                message: format!(
-                    "Serveur ASR distant injoignable sur {} ({}). Lancez votre serveur (vLLM / Speaches) ou conservez Whisper {} local.",
-                    target_url,
-                    e,
-                    crate::stt::active_whisper_backend_label()
-                ),
-                model_id: payload.model_id,
-            })
-        }
-    }
+) -> Json<ActivationOutcome> {
+    Json(
+        state
+            .activate_model(&payload.model_id, payload.api_url, payload.api_key)
+            .await,
+    )
 }
 
+#[derive(Deserialize)]
+pub struct TranslationEngineRequest {
+    pub engine: String,
+}
+
+async fn translation_engine_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<TranslationEngineRequest>,
+) -> Json<ActivationOutcome> {
+    Json(state.set_translation_engine(&payload.engine).await)
+}
 
 async fn get_devices_handler() -> Json<Vec<DeviceInfo>> {
     Json(AudioDeviceManager::list_input_devices())
@@ -402,35 +252,49 @@ struct TestSttResponse {
     message: String,
 }
 
-async fn test_stt_handler(
-    State(state): State<AppState>,
-) -> Json<TestSttResponse> {
+async fn test_stt_handler(State(state): State<AppState>) -> Json<TestSttResponse> {
     let cfg = state.config.read().await.clone();
-    if cfg.stt.engine_type == "whisper_local" {
-        let hw = crate::stt::active_hardware_summary(
-            cfg.stt.use_gpu,
-            &cfg.stt.gpu_backend,
-            cfg.stt.gpu_device,
-        );
-        return Json(TestSttResponse {
-            success: true,
-            message: format!("Whisper local ({}) est actif et prêt.", hw),
-        });
+    match cfg.stt.engine_type.as_str() {
+        crate::stt::models::ENGINE_WHISPER => {
+            let hw = crate::stt::active_hardware_summary(cfg.stt.use_gpu, &cfg.stt.gpu_backend, cfg.stt.gpu_device);
+            let loaded = state.whisper_engine.lock().await.is_loaded();
+            return Json(TestSttResponse {
+                success: loaded,
+                message: if loaded {
+                    format!("Whisper local ({hw}) est actif et prêt.")
+                } else {
+                    "Aucun modèle Whisper n'est chargé.".to_string()
+                },
+            });
+        }
+        crate::stt::models::ENGINE_KYUTAI | crate::stt::models::ENGINE_HIBIKI => {
+            let running = state.streaming_worker.lock().map(|w| w.is_some()).unwrap_or(false);
+            return Json(TestSttResponse {
+                success: running,
+                message: if running {
+                    format!("{} est chargé et écoute.", cfg.stt.model_name)
+                } else {
+                    format!("{} n'est pas chargé.", cfg.stt.model_name)
+                },
+            });
+        }
+        _ => {}
     }
-
+    if let Err(e) = crate::netpolicy::ensure_local_endpoint(&cfg.stt.api_url) {
+        return Json(TestSttResponse { success: false, message: e });
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .unwrap_or_default();
-
     match client.get(&cfg.stt.api_url).send().await {
         Ok(resp) => Json(TestSttResponse {
             success: true,
-            message: format!("Serveur ASR joignable (HTTP {})", resp.status()),
+            message: format!("Serveur ASR local joignable (HTTP {})", resp.status()),
         }),
         Err(e) => Json(TestSttResponse {
             success: false,
-            message: format!("Impossible de joindre {}: {}", cfg.stt.api_url, e),
+            message: format!("Impossible de joindre {} : {}", cfg.stt.api_url, e),
         }),
     }
 }
@@ -439,18 +303,65 @@ async fn sse_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.event_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| {
-        match msg {
-            Ok(event) => {
-                if let Ok(json) = serde_json::to_string(&event) {
-                    Some(Ok(Event::default().data(json)))
-                } else {
-                    None
-                }
-            }
-            Err(_) => None,
-        }
+    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
+        Ok(event) => serde_json::to_string(&event)
+            .ok()
+            .map(|json| Ok(Event::default().data(json))),
+        Err(_) => None,
     });
-
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn same_origin_ui_requests_are_allowed() {
+        let h = headers(&[("host", "127.0.0.1:3000"), ("origin", "http://127.0.0.1:3000"), ("sec-fetch-site", "same-origin")]);
+        assert!(check_request(&Method::POST, &h, "127.0.0.1").is_ok());
+        let h = headers(&[("host", "localhost:3000")]);
+        assert!(check_request(&Method::GET, &h, "127.0.0.1").is_ok());
+    }
+
+    #[test]
+    fn cross_site_requests_are_rejected() {
+        // A malicious page trying to reconfigure the ASR endpoint.
+        let h = headers(&[("host", "127.0.0.1:3000"), ("origin", "https://evil.example"), ("sec-fetch-site", "cross-site")]);
+        assert!(check_request(&Method::POST, &h, "127.0.0.1").is_err());
+        // Even without Fetch Metadata, a foreign Origin is rejected.
+        let h = headers(&[("host", "127.0.0.1:3000"), ("origin", "https://evil.example")]);
+        assert!(check_request(&Method::POST, &h, "127.0.0.1").is_err());
+        // Cross-site reads (e.g. SSE / config) are refused too.
+        let h = headers(&[("host", "127.0.0.1:3000"), ("sec-fetch-site", "cross-site")]);
+        assert!(check_request(&Method::GET, &h, "127.0.0.1").is_err());
+    }
+
+    #[test]
+    fn dns_rebinding_hosts_are_rejected() {
+        let h = headers(&[("host", "attacker.example:3000")]);
+        assert!(check_request(&Method::GET, &h, "127.0.0.1").is_err());
+        let h = headers(&[("host", "192.168.1.10:3000")]);
+        assert!(check_request(&Method::GET, &h, "127.0.0.1").is_err());
+        assert!(check_request(&Method::GET, &h, "0.0.0.0").is_ok());
+    }
+
+    #[test]
+    fn obs_browser_source_is_allowed() {
+        // OBS loads the overlay directly (no Origin, Sec-Fetch-Site: none).
+        let h = headers(&[("host", "localhost:3000"), ("sec-fetch-site", "none")]);
+        assert!(check_request(&Method::GET, &h, "127.0.0.1").is_ok());
+    }
 }

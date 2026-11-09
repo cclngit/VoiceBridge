@@ -17,4 +17,6 @@ Vous pouvez également télécharger manuellement les modèles officiels whisper
 | **Whisper Turbo** | 1.5 Go | `curl -L -o models/ggml-large-v3-turbo.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin` |
 | **Whisper Large-v3** | 2.9 Go | `curl -L -o models/ggml-large-v3.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin` |
 
-*Note : Les fichiers binaires `.bin` sont exclus du suivi Git via `.gitignore`.*
+Les modèles Kyutai STT, Hibiki et MADLAD-400 sont des dossiers (`models/kyutai-stt-1b-en_fr-candle/`, `models/hibiki-1b-rs-bf16/`, `models/madlad400-3b-mt/`…) téléchargés depuis l'onglet Modèles, avec vérification SHA-256.
+
+*Note : les fichiers `.bin` et les dossiers de modèles sont exclus du suivi Git via `.gitignore`.*

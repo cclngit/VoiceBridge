@@ -1,278 +1,270 @@
-use crate::codec::mimi::{MimiConfig, MimiFrame, MimiStreamingCodec};
-use candle_core::Device;
-use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+//! Kyutai streaming speech-to-text (Delayed Streams Modeling) running in-process
+//! with Candle, using the official `moshi` crate and the `kyutai/stt-1b-en_fr-candle`
+//! weights (Mimi neural codec + 1B decoder, French/English, 0.5 s text delay).
+//!
+//! The model consumes 80 ms frames of 24 kHz mono audio and emits words with
+//! timestamps, plus voice-activity probabilities from its semantic VAD heads that
+//! are used to detect end of turn.
 
-/// Resolves the optimal Candle Device (CUDA / Metal / CPU) based on system configuration.
-pub fn resolve_candle_device(use_gpu: bool, _gpu_device: i32) -> Device {
-    if use_gpu {
-        #[cfg(feature = "cuda")]
-        {
-            if let Ok(d) = Device::new_cuda(_gpu_device.max(0) as usize) {
-                return d;
+use crate::ml::spm::SentencePieceDecoder;
+use candle_core::{Device, Tensor};
+use std::path::{Path, PathBuf};
+
+pub const SAMPLE_RATE: u32 = 24_000;
+pub const FRAME_SAMPLES: usize = 1920;
+
+#[derive(Debug, serde::Deserialize)]
+struct SttSection {
+    audio_silence_prefix_seconds: f64,
+    audio_delay_seconds: f64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelConfig {
+    mimi_name: String,
+    tokenizer_name: String,
+    card: usize,
+    text_card: usize,
+    dim: usize,
+    n_q: usize,
+    context: usize,
+    max_period: f64,
+    num_heads: usize,
+    num_layers: usize,
+    causal: bool,
+    #[serde(default)]
+    extra_heads_num_heads: Option<usize>,
+    #[serde(default)]
+    extra_heads_dim: Option<usize>,
+    stt_config: SttSection,
+}
+
+impl ModelConfig {
+    fn lm_config(&self) -> moshi::lm::Config {
+        let transformer = moshi::transformer::Config {
+            d_model: self.dim,
+            num_heads: self.num_heads,
+            num_layers: self.num_layers,
+            dim_feedforward: self.dim * 4,
+            causal: self.causal,
+            norm_first: true,
+            bias_ff: false,
+            bias_attn: false,
+            layer_scale: None,
+            context: self.context,
+            max_period: self.max_period as usize,
+            use_conv_block: false,
+            use_conv_bias: true,
+            cross_attention: None,
+            gating: Some(candle_nn::Activation::Silu),
+            norm: moshi::NormType::RmsNorm,
+            positional_embedding: moshi::transformer::PositionalEmbedding::Rope,
+            conv_layout: false,
+            conv_kernel_size: 3,
+            kv_repeat: 1,
+            max_seq_len: 4096 * 4,
+            shared_cross_attn: false,
+        };
+        let extra_heads = match (self.extra_heads_num_heads, self.extra_heads_dim) {
+            (Some(num_heads), Some(dim)) if num_heads > 0 => {
+                Some(moshi::lm::ExtraHeadsConfig { num_heads, dim })
             }
-        }
-        #[cfg(feature = "metal")]
-        {
-            if let Ok(d) = Device::new_metal(_gpu_device.max(0) as usize) {
-                return d;
-            }
+            _ => None,
+        };
+        moshi::lm::Config {
+            transformer,
+            depformer: None,
+            audio_vocab_size: self.card + 1,
+            text_in_vocab_size: self.text_card + 1,
+            text_out_vocab_size: self.text_card,
+            audio_codebooks: self.n_q,
+            conditioners: Default::default(),
+            extra_heads,
         }
     }
-    Device::Cpu
 }
 
-/// Configuration for Kyutai Delayed Streams Modeling (DSM) Streaming STT
-/// based on `kyutai/stt-1b-en_fr` (arXiv:2410.00037 & DSM preprint).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KyutaiSttConfig {
-    /// Model identifier or repository name (default: "kyutai/stt-1b-en_fr")
-    pub model_id: String,
-    /// Delay between audio stream and text prediction in steps (default: 6 steps = 480ms ~ 500ms)
-    pub text_delay_steps: usize,
-    /// Maximum context window in steps (default: 250 steps = 20s at 12.5 Hz)
-    pub context_window_steps: usize,
-    /// Language code ("fr", "en", or "auto")
-    pub language: String,
-    /// Semantic Voice Activity Detection threshold [0.0, 1.0]
-    pub semantic_vad_threshold: f32,
-    /// Active hardware backend ("cuda", "metal", or "cpu")
-    pub active_backend: String,
+/// Events produced by the streaming recognizer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KyutaiEvent {
+    /// A newly recognised word, with its start time (seconds, stream relative).
+    Word { text: String, start_s: f64 },
+    /// The semantic VAD predicts the speaker finished their turn.
+    EndOfTurn,
 }
 
-impl Default for KyutaiSttConfig {
-    fn default() -> Self {
-        Self {
-            model_id: "kyutai/stt-1b-en_fr".to_string(),
-            text_delay_steps: 6, // 6 * 80ms = 480ms (~0.5s delay)
-            context_window_steps: 250,
-            language: "fr".to_string(),
-            semantic_vad_threshold: 0.45,
-            active_backend: "cpu".to_string(),
-        }
-    }
-}
-
-/// A word emitted by the streaming STT engine with precise word-level timestamps (80ms grid).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StreamingWord {
-    pub word: String,
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub confidence: f32,
-    pub is_final: bool,
-    pub language: String,
-}
-
-/// Kyutai Delayed Streams Streaming STT Engine
-/// Integrates Mimi codec (24 kHz, 12.5 Hz) with Inner Monologue Delayed Streams decoding.
-pub struct KyutaiStreamingSttEngine {
-    config: KyutaiSttConfig,
-    codec: MimiStreamingCodec,
-    #[allow(dead_code)]
+pub struct KyutaiStt {
+    state: moshi::asr::State,
+    tokenizer: SentencePieceDecoder,
     device: Device,
-    // Circular history of audio frames
-    audio_history: VecDeque<MimiFrame>,
-    // Current step in the 12.5 Hz stream
-    current_step: u64,
-    // Pending word builder (accumulates sub-tokens until boundary)
-    current_word: String,
-    word_start_ms: u64,
-    word_confidence_acc: f32,
-    token_count_in_word: u32,
-    // Semantic VAD tracking
-    is_speaking: bool,
-    speech_confidence: f32,
-    consecutive_silence_steps: usize,
+    audio_delay_s: f64,
+    silence_prefix_s: f64,
+    pending: Vec<f32>,
+    has_vad_heads: bool,
+    end_of_turn_reported: bool,
+    words_since_turn: usize,
+    /// Steps left before reporting a detected end of turn. The VAD heads look at the
+    /// current audio while words come out `audio_delay` later, so the turn is closed only
+    /// once the delayed words have been emitted.
+    pending_end_of_turn: Option<usize>,
+    delay_steps: usize,
 }
 
-#[allow(dead_code)]
-impl KyutaiStreamingSttEngine {
-    pub fn new(config: KyutaiSttConfig, device: Device) -> Self {
-        let codec = MimiStreamingCodec::with_config(MimiConfig::default(), device.clone());
-        Self {
-            config,
-            codec,
-            device,
-            audio_history: VecDeque::with_capacity(300),
-            current_step: 0,
-            current_word: String::new(),
-            word_start_ms: 0,
-            word_confidence_acc: 0.0,
-            token_count_in_word: 0,
-            is_speaking: false,
-            speech_confidence: 0.0,
-            consecutive_silence_steps: 0,
-        }
-    }
+/// Files that make up the model directory.
+pub fn required_files(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), String> {
+    let config_path = dir.join("config.json");
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    let cfg: ModelConfig =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid Kyutai config: {e}"))?;
+    Ok((
+        config_path,
+        dir.join("model.safetensors"),
+        dir.join(&cfg.mimi_name),
+        dir.join(&cfg.tokenizer_name),
+    ))
+}
 
-    pub fn config(&self) -> &KyutaiSttConfig {
-        &self.config
-    }
-
-    pub fn device(&self) -> &Device {
-        &self.device
-    }
-
-    /// Whether the Semantic VAD currently classifies the user as speaking.
-    pub fn is_speaking(&self) -> bool {
-        self.is_speaking
-    }
-
-    /// Current speech confidence score from the Semantic VAD head.
-    pub fn speech_confidence(&self) -> f32 {
-        self.speech_confidence
-    }
-
-    /// Processes an 80ms audio frame (1,920 mono f32 samples at 24,000 Hz)
-    /// and returns any words that have been finalized at this step.
-    pub fn step_frame(&mut self, audio_24khz_80ms: &[f32]) -> Result<Vec<StreamingWord>, String> {
-        let frame = self
-            .codec
-            .encode_frame(audio_24khz_80ms)
-            .map_err(|e| format!("Mimi encoding error: {e}"))?;
-
-        let step = frame.step;
-        let _timestamp_ms = frame.timestamp_ms;
-        let is_speech_acoustic = frame.is_speech;
-
-        // Semantic VAD inference: combines acoustic RMS with codebook 0 (semantic distillation)
-        let semantic_prob = if is_speech_acoustic {
-            let token = frame.semantic_token();
-            // High token entropy signifies structured linguistic phonemes
-            0.5 + ((token % 100) as f32 / 200.0)
-        } else {
-            0.05
-        };
-
-        self.speech_confidence = semantic_prob;
-        if semantic_prob >= self.config.semantic_vad_threshold {
-            self.is_speaking = true;
-            self.consecutive_silence_steps = 0;
-        } else {
-            self.consecutive_silence_steps += 1;
-            // 4 steps of silence (320 ms) confirms end of turn / pause
-            if self.consecutive_silence_steps >= 4 {
-                self.is_speaking = false;
+impl KyutaiStt {
+    /// Load the model from a directory containing `config.json`, `model.safetensors`,
+    /// the Mimi codec weights and the SentencePiece tokenizer.
+    pub fn load(dir: &Path, device: &Device) -> Result<Self, String> {
+        let (config_path, model_path, mimi_path, tokenizer_path) = required_files(dir)?;
+        let raw = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let cfg: ModelConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        for p in [&model_path, &mimi_path, &tokenizer_path] {
+            if !p.is_file() {
+                return Err(format!("missing model file {}", p.display()));
             }
         }
 
-        self.audio_history.push_back(frame.clone());
-        if self.audio_history.len() > self.config.context_window_steps {
-            self.audio_history.pop_front();
+        let tokenizer = SentencePieceDecoder::open(&tokenizer_path)?;
+        let dtype = device.bf16_default_to_f32();
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(&[&model_path], dtype, device)
+                .map_err(|e| format!("cannot map Kyutai weights: {e}"))?
+        };
+        let lm_cfg = cfg.lm_config();
+        let has_vad_heads = lm_cfg.extra_heads.is_some();
+        let lm = moshi::lm::LmModel::new(&lm_cfg, moshi::nn::MaybeQuantizedVarBuilder::Real(vb))
+            .map_err(|e| format!("cannot build Kyutai LM: {e}"))?;
+        let mimi_path_str = mimi_path.to_str().ok_or("non UTF-8 model path")?;
+        let mimi = moshi::mimi::load(mimi_path_str, Some(cfg.n_q), device)
+            .map_err(|e| format!("cannot load Mimi codec: {e}"))?;
+        let asr_delay_in_tokens = (cfg.stt_config.audio_delay_seconds * 12.5) as usize;
+        let state = moshi::asr::State::new(1, asr_delay_in_tokens, 0.0, mimi, lm)
+            .map_err(|e| format!("cannot init Kyutai state: {e}"))?;
+
+        let mut engine = Self {
+            state,
+            tokenizer,
+            device: device.clone(),
+            audio_delay_s: cfg.stt_config.audio_delay_seconds,
+            silence_prefix_s: cfg.stt_config.audio_silence_prefix_seconds,
+            pending: Vec::with_capacity(FRAME_SAMPLES * 4),
+            has_vad_heads,
+            end_of_turn_reported: true,
+            words_since_turn: 0,
+            pending_end_of_turn: None,
+            delay_steps: asr_delay_in_tokens + 2,
+        };
+        engine.prime()?;
+        Ok(engine)
+    }
+
+    fn prime(&mut self) -> Result<(), String> {
+        if self.silence_prefix_s > 0.0 {
+            let n = (self.silence_prefix_s * SAMPLE_RATE as f64) as usize;
+            self.push_pcm(&vec![0.0; n])?;
         }
+        Ok(())
+    }
 
-        self.current_step = step + 1;
+    /// Text delay of the model (time between audio and the emitted words).
+    pub fn audio_delay_s(&self) -> f64 {
+        self.audio_delay_s
+    }
 
-        // Delayed Streams Modeling:
-        // Text is delayed by `text_delay_steps` (e.g. 6 steps = 480ms).
-        // If we haven't reached the delay horizon yet, we accumulate acoustic context.
-        if step < self.config.text_delay_steps as u64 {
-            return Ok(Vec::new());
-        }
-
-        let delayed_step = step - self.config.text_delay_steps as u64;
-        let delayed_timestamp_ms = delayed_step * 80;
-
-        let mut emitted_words = Vec::new();
-
-        if self.is_speaking && is_speech_acoustic {
-            // Emulate SentencePiece / BPE token decoding from inner monologue
-            let semantic_tok = frame.semantic_token();
-            let sub_token = Self::map_semantic_to_phoneme_or_text(
-                semantic_tok,
-                delayed_step,
-                &self.config.language,
-            );
-
-            if !sub_token.is_empty() {
-                if self.current_word.is_empty() {
-                    self.word_start_ms = delayed_timestamp_ms;
-                }
-                self.current_word.push_str(&sub_token);
-                self.word_confidence_acc += semantic_prob;
-                self.token_count_in_word += 1;
-
-                // Check for word boundary (space or punctuation)
-                if sub_token.ends_with(' ') || sub_token.ends_with(',') || sub_token.ends_with('.') {
-                    let cleaned = self.current_word.trim().to_string();
-                    if !cleaned.is_empty() {
-                        let avg_conf = (self.word_confidence_acc
-                            / self.token_count_in_word.max(1) as f32)
-                            .min(1.0);
-                        emitted_words.push(StreamingWord {
-                            word: cleaned,
-                            start_ms: self.word_start_ms,
-                            end_ms: delayed_timestamp_ms + 80,
-                            confidence: avg_conf,
-                            is_final: true,
-                            language: self.config.language.clone(),
-                        });
+    /// Feed 24 kHz mono samples (any length) and collect recognised events.
+    pub fn push_pcm(&mut self, pcm: &[f32]) -> Result<Vec<KyutaiEvent>, String> {
+        self.pending.extend_from_slice(pcm);
+        let mut events = Vec::new();
+        let mut offset = 0;
+        while self.pending.len() - offset >= FRAME_SAMPLES {
+            let frame = &self.pending[offset..offset + FRAME_SAMPLES];
+            offset += FRAME_SAMPLES;
+            let tensor = Tensor::new(frame, &self.device)
+                .and_then(|t| t.reshape((1, 1, FRAME_SAMPLES)))
+                .map_err(|e| e.to_string())?;
+            let msgs = self
+                .state
+                .step_pcm(tensor, None, &().into(), |_, _, _| ())
+                .map_err(|e| format!("Kyutai inference error: {e}"))?;
+            for msg in msgs {
+                match msg {
+                    moshi::asr::AsrMsg::Word { tokens, start_time, .. } => {
+                        let text = self.tokenizer.decode(&tokens);
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            self.end_of_turn_reported = false;
+                            self.words_since_turn += 1;
+                            events.push(KyutaiEvent::Word {
+                                text: text.to_string(),
+                                start_s: start_time,
+                            });
+                        }
                     }
-                    self.current_word.clear();
-                    self.word_confidence_acc = 0.0;
-                    self.token_count_in_word = 0;
+                    moshi::asr::AsrMsg::Step { prs, .. } => {
+                        // prs[h][0] = probability of no voice activity within horizon h
+                        // (0.5 s, 1 s, 2 s, 3 s for stt-1b-en_fr). Horizon 2 s marks end of turn.
+                        if self.has_vad_heads
+                            && !self.end_of_turn_reported
+                            && self.pending_end_of_turn.is_none()
+                            && self.words_since_turn > 0
+                            && prs.get(2).and_then(|p| p.first()).is_some_and(|&p| p > 0.5)
+                        {
+                            self.pending_end_of_turn = Some(self.delay_steps);
+                        }
+                        if let Some(left) = self.pending_end_of_turn {
+                            if left == 0 {
+                                self.pending_end_of_turn = None;
+                                self.end_of_turn_reported = true;
+                                self.words_since_turn = 0;
+                                events.push(KyutaiEvent::EndOfTurn);
+                            } else {
+                                self.pending_end_of_turn = Some(left - 1);
+                            }
+                        }
+                    }
+                    moshi::asr::AsrMsg::EndWord { .. } => {}
                 }
             }
-        } else if !self.current_word.is_empty() && self.consecutive_silence_steps >= 2 {
-            // Flush any remaining word at boundary
-            let cleaned = self.current_word.trim().to_string();
-            if !cleaned.is_empty() {
-                let avg_conf = (self.word_confidence_acc / self.token_count_in_word.max(1) as f32)
-                    .min(1.0);
-                emitted_words.push(StreamingWord {
-                    word: cleaned,
-                    start_ms: self.word_start_ms,
-                    end_ms: delayed_timestamp_ms,
-                    confidence: avg_conf,
-                    is_final: true,
-                    language: self.config.language.clone(),
-                });
-            }
-            self.current_word.clear();
-            self.word_confidence_acc = 0.0;
-            self.token_count_in_word = 0;
         }
-
-        Ok(emitted_words)
+        self.pending.drain(..offset);
+        Ok(events)
     }
 
-    /// Deterministic semantic vocabulary mapping for testing and zero-shot simulation
-    fn map_semantic_to_phoneme_or_text(token: u32, step: u64, language: &str) -> String {
-        // High level vocabulary index
-        let vocab_idx = (token + step as u32) % 12;
-        let fr_words = [
-            "Bonjour ", "je ", "suis ", "en ", "direct ", "sur ", "VoiceBridge ", "et ", "tout ", "fonctionne ", "parfaitement. ", " "
-        ];
-        let en_words = [
-            "Hello ", "I ", "am ", "live ", "streaming ", "with ", "VoiceBridge ", "and ", "everything ", "is ", "working. ", " "
-        ];
-
-        let words = if language.starts_with("en") {
-            &en_words
-        } else {
-            &fr_words
-        };
-
-        if step % 3 == 0 {
-            words[vocab_idx as usize % words.len()].to_string()
-        } else {
-            String::new()
+    /// Feed enough silence to flush the words still inside the model's delay window.
+    pub fn flush(&mut self) -> Result<Vec<KyutaiEvent>, String> {
+        let n = ((self.audio_delay_s + 0.5) * SAMPLE_RATE as f64) as usize;
+        let mut events = self.push_pcm(&vec![0.0; n])?;
+        if self.words_since_turn > 0 && !events.last().is_some_and(|e| *e == KyutaiEvent::EndOfTurn) {
+            self.words_since_turn = 0;
+            self.end_of_turn_reported = true;
+            events.push(KyutaiEvent::EndOfTurn);
         }
+        self.pending_end_of_turn = None;
+        Ok(events)
     }
 
-    /// Resets the engine state and clears all buffers
-    pub fn reset(&mut self) {
-        self.codec.reset();
-        self.audio_history.clear();
-        self.current_step = 0;
-        self.current_word.clear();
-        self.word_start_ms = 0;
-        self.word_confidence_acc = 0.0;
-        self.token_count_in_word = 0;
-        self.is_speaking = false;
-        self.speech_confidence = 0.0;
-        self.consecutive_silence_steps = 0;
+    /// Reset the streaming state (KV cache, codec state) for a fresh stream.
+    pub fn reset(&mut self) -> Result<(), String> {
+        self.state.reset().map_err(|e| e.to_string())?;
+        self.pending.clear();
+        self.end_of_turn_reported = true;
+        self.words_since_turn = 0;
+        self.pending_end_of_turn = None;
+        self.prime()
     }
 }
 
@@ -280,47 +272,104 @@ impl KyutaiStreamingSttEngine {
 mod tests {
     use super::*;
 
+    /// Real-model test — needs `models/kyutai-stt-1b-en_fr-candle` and a French WAV file:
+    /// `VB_TEST_WAV_FR=/path/fr.wav cargo test --release -- --ignored kyutai`
     #[test]
-    fn test_kyutai_stt_config_defaults() {
-        let config = KyutaiSttConfig::default();
-        assert_eq!(config.model_id, "kyutai/stt-1b-en_fr");
-        assert_eq!(config.text_delay_steps, 6);
-        assert_eq!(config.context_window_steps, 250);
-        assert_eq!(config.language, "fr");
-        assert_eq!(config.semantic_vad_threshold, 0.45);
+    #[ignore]
+    fn kyutai_transcribes_french_speech() {
+        let wav = std::env::var("VB_TEST_WAV_FR").expect("set VB_TEST_WAV_FR");
+        let (pcm, rate) = crate::audio::wav::read_wav_mono(Path::new(&wav)).unwrap();
+        let pcm24 = crate::audio::resampler::resample_buffer(&pcm, rate, SAMPLE_RATE);
+        let device = crate::ml::resolve_device(crate::ml::DeviceSlot::Streaming, std::env::var("VB_TEST_CPU").is_err(), 0);
+        let started = std::time::Instant::now();
+        let mut stt = KyutaiStt::load(Path::new("models/kyutai-stt-1b-en_fr-candle"), &device).unwrap();
+        println!("loaded on {} in {:?}", crate::ml::device_label(&device), started.elapsed());
+        let started = std::time::Instant::now();
+        let mut words = Vec::new();
+        let mut turns = 0;
+        let mut turn_texts: Vec<String> = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+        let mut handle = |ev: KyutaiEvent, words: &mut Vec<String>, turns: &mut usize| match ev {
+            KyutaiEvent::Word { text, .. } => {
+                words.push(text.clone());
+                current.push(text);
+            }
+            KyutaiEvent::EndOfTurn => {
+                *turns += 1;
+                turn_texts.push(current.join(" "));
+                current.clear();
+            }
+        };
+        // Feed in irregular blocks like the live pipeline does, with a 3 s pause between
+        // two repetitions (a real end of turn).
+        let mut input = pcm24.clone();
+        input.extend(std::iter::repeat_n(0.0, 3 * SAMPLE_RATE as usize));
+        input.extend_from_slice(&pcm24);
+        for block in input.chunks(1000) {
+            for ev in stt.push_pcm(block).unwrap() {
+                handle(ev, &mut words, &mut turns);
+            }
+        }
+        for ev in stt.flush().unwrap() {
+            handle(ev, &mut words, &mut turns);
+        }
+        println!("turns: {turn_texts:#?}");
+        let audio_s = input.len() as f32 / SAMPLE_RATE as f32;
+        let elapsed = started.elapsed().as_secs_f32();
+        let text = words.join(" ");
+        println!("transcript: {text}\nend-of-turns: {turns}\nRTF: {:.2} ({elapsed:.1}s for {audio_s:.1}s)", elapsed / audio_s);
+        let lower = text.to_lowercase();
+        assert!(lower.contains("bonjour"), "{text}");
+        assert!(lower.contains("traduction"), "{text}");
+        assert!(turns >= 2);
+        // End of turn must follow real pauses, never cut a phrase between two words
+        // (the semantic VAD is ahead of the delayed text stream).
+        for t in &turn_texts {
+            assert!(t.trim_end().ends_with([',', '.', '?', '!']), "turn cut mid-phrase: {t:?}");
+        }
     }
 
+    /// Regression test: Kyutai (streaming slot) and MADLAD (translation slot) running at
+    /// the same time on the GPU must both produce correct output.
+    /// `VB_TEST_WAV_FR=/path/fr.wav cargo test --release -- --ignored concurrently`
     #[test]
-    fn test_delayed_streams_alignment_and_vad() {
-        let config = KyutaiSttConfig::default();
-        let mut engine = KyutaiStreamingSttEngine::new(config, Device::Cpu);
-
-        // Feed 10 frames of silence (800ms)
-        let silence = vec![0.0f32; 1920];
-        for _ in 0..10 {
-            let words = engine.step_frame(&silence).unwrap();
-            assert!(words.is_empty(), "Silence should not emit words");
-            assert!(!engine.is_speaking(), "VAD should be inactive during silence");
+    #[ignore]
+    fn kyutai_and_madlad_run_concurrently() {
+        let wav = std::env::var("VB_TEST_WAV_FR").expect("set VB_TEST_WAV_FR");
+        let (pcm, rate) = crate::audio::wav::read_wav_mono(Path::new(&wav)).unwrap();
+        let pcm24 = crate::audio::resampler::resample_buffer(&pcm, rate, SAMPLE_RATE);
+        let mt = std::thread::spawn(|| {
+            let dev = crate::ml::resolve_device(crate::ml::DeviceSlot::Translation, true, 0);
+            let mut m = crate::translate::madlad_engine::MadladTranslator::load(Path::new("models/madlad400-3b-mt"), &dev).unwrap();
+            (0..6)
+                .map(|_| m.translate("Le chat dort sur le canapé. Il fait beau aujourd'hui.", "en").unwrap())
+                .collect::<Vec<_>>()
+        });
+        let dev = crate::ml::resolve_device(crate::ml::DeviceSlot::Streaming, true, 0);
+        let mut stt = KyutaiStt::load(Path::new("models/kyutai-stt-1b-en_fr-candle"), &dev).unwrap();
+        let mut words = Vec::new();
+        for _ in 0..2 {
+            for block in pcm24.chunks(960) {
+                for ev in stt.push_pcm(block).unwrap() {
+                    if let KyutaiEvent::Word { text, .. } = ev {
+                        words.push(text);
+                    }
+                }
+            }
         }
-
-        // Feed speech frames: sine wave at 440 Hz
-        let speech: Vec<f32> = (0..1920)
-            .map(|i| ((i as f32 / 24000.0) * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5)
-            .collect();
-
-        let mut total_words = Vec::new();
-        for _ in 0..15 {
-            let words = engine.step_frame(&speech).unwrap();
-            assert!(engine.is_speaking(), "VAD should become active during speech");
-            total_words.extend(words);
+        for ev in stt.flush().unwrap() {
+            if let KyutaiEvent::Word { text, .. } = ev {
+                words.push(text);
+            }
         }
-
-        // Words should have been emitted with correct timestamps
-        assert!(!total_words.is_empty(), "Speech stream should produce words");
-        for word in &total_words {
-            assert!(word.confidence >= 0.45);
-            assert!(word.end_ms >= word.start_ms);
-            assert_eq!(word.language, "fr");
+        let translations = mt.join().unwrap();
+        let text = words.join(" ").to_lowercase();
+        println!("stt: {text}\nmt: {translations:?}");
+        assert!(text.matches("bonjour").count() >= 2, "{text}");
+        assert!(text.contains("importante"), "{text}");
+        for t in &translations {
+            let l = t.to_lowercase();
+            assert!(l.contains("cat") && (l.contains("sofa") || l.contains("couch")), "{t}");
         }
     }
 }

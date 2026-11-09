@@ -20,10 +20,11 @@ use gpui_kit::{
 
 use crate::audio::AudioDeviceManager;
 use crate::server::{AppState, PipelineEvent};
-use crate::stt::{
-    download_model_with_progress, get_available_models, is_model_installed, list_gpu_devices,
-    GpuDeviceInfo, ModelMetadata,
+use crate::stt::models::{
+    ENGINE_HIBIKI, ENGINE_KYUTAI, ENGINE_REMOTE, ENGINE_WHISPER, KIND_SPEECH_TRANSLATION, KIND_TRANSLATION,
 };
+use crate::stt::{get_available_models, is_model_installed, list_gpu_devices, GpuDeviceInfo, ModelMetadata};
+use crate::translate::engine::{ENGINE_LOCAL_LLM, ENGINE_MADLAD, ENGINE_OFF};
 
 // ═══════════════════════════════════════════════════════════════
 // THEME COLORS (Cyber Neon Dark - matching docs/DESIGN.md)
@@ -78,7 +79,7 @@ pub struct VoiceBridgeApp {
     configured_target_lang: String,
     latest_stt_ms: u128,
     latest_trans_ms: u128,
-    latest_confidence: f32,
+    latest_model_used: String,
 
     // Real-time audio / pipeline metrics
     current_volume: f32,
@@ -118,6 +119,12 @@ pub struct VoiceBridgeApp {
     download_msg: String,
     download_pct: f32,
     is_downloading: bool,
+    download_model_id: String,
+
+    // Translation engine ("madlad", "local_llm", "off") and engine status message
+    translation_engine: String,
+    translation_llm_url: String,
+    engine_message: String,
 }
 
 impl VoiceBridgeApp {
@@ -163,15 +170,15 @@ impl VoiceBridgeApp {
             state,
             tokio_handle,
             active_tab: GuiTab::Direct,
-            latest_source_text: "Allez, c'est parti !".to_string(),
-            latest_trans_text: "Let's get started!".to_string(),
+            latest_source_text: "En attente de parole…".to_string(),
+            latest_trans_text: String::new(),
             latest_source_lang: if init_src == "auto" { "AUTO".to_string() } else { init_src.to_uppercase() },
             latest_target_lang: init_tgt.to_uppercase(),
             configured_source_lang: init_src,
             configured_target_lang: init_tgt,
-            latest_stt_ms: 1152,
-            latest_trans_ms: 661,
-            latest_confidence: 98.4,
+            latest_stt_ms: 0,
+            latest_trans_ms: 0,
+            latest_model_used: String::new(),
             current_volume: 0.0,
             is_recording: true,
             history_entries: Vec::new(),
@@ -197,6 +204,10 @@ impl VoiceBridgeApp {
             download_msg: String::new(),
             download_pct: 0.0,
             is_downloading: false,
+            download_model_id: String::new(),
+            translation_engine: initial_cfg.translation.engine.clone(),
+            translation_llm_url: initial_cfg.translation.local_api_url.clone(),
+            engine_message: String::new(),
         };
 
         // Populate initial history if available
@@ -218,15 +229,13 @@ impl VoiceBridgeApp {
         }
 
         // Auto-start local Python ASR server if saved configuration uses a local catalog server model
-        if initial_cfg.stt.engine_type != "whisper_local"
+        if initial_cfg.stt.engine_type == ENGINE_REMOTE
             && initial_cfg.stt.api_url.contains("127.0.0.1:8000")
             && initial_cfg.stt.model_id != "custom_api"
+            && let Some(meta) = crate::stt::find_model(&initial_cfg.stt.model_id)
+            && meta.auto_start_server
         {
-            if let Some(meta) = crate::stt::find_model(&initial_cfg.stt.model_id) {
-                if !meta.is_local_gpu {
-                    app.start_local_asr_server(&meta.default_model_name, cx);
-                }
-            }
+            app.start_local_asr_server(&meta.default_model_name, cx);
         }
 
         // Start background high-frequency polling loop for volume & events
@@ -238,14 +247,30 @@ impl VoiceBridgeApp {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
 
                 // Check for new broadcast pipeline events
-                let mut new_event = None;
-                while let Ok(evt) = event_rx.try_recv() {
-                    new_event = Some(evt);
+                let mut new_events = Vec::new();
+                loop {
+                    match event_rx.try_recv() {
+                        Ok(evt) => new_events.push(evt),
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
                 }
 
                 let vol = *state_clone.rms_rx.borrow();
                 let rec = state_clone.is_recording.load(Ordering::Relaxed);
                 let dl = state_clone.download_status.read().await.clone();
+                let (engine, model_id, trans_engine, trans_url, src, tgt) = {
+                    let cfg = state_clone.config.read().await;
+                    (
+                        cfg.stt.engine_type.clone(),
+                        cfg.stt.model_id.clone(),
+                        cfg.translation.engine.clone(),
+                        cfg.translation.local_api_url.clone(),
+                        cfg.stt.language.clone(),
+                        cfg.translation.target_lang.clone(),
+                    )
+                };
+                let engine_msg = state_clone.engine_message();
 
                 let res = this.update(cx, |this, cx| {
                     this.current_volume = vol;
@@ -253,10 +278,27 @@ impl VoiceBridgeApp {
                     this.is_downloading = dl.is_downloading;
                     this.download_pct = dl.percent;
                     this.download_msg = dl.status_message.clone();
+                    this.download_model_id = dl.model_id.clone();
+                    // Keep the GUI in sync with changes made from the web UI / background tasks.
+                    this.active_engine = engine;
+                    this.active_model_id = model_id;
+                    this.translation_engine = trans_engine;
+                    this.translation_llm_url = trans_url;
+                    if this.configured_source_lang != src || this.configured_target_lang != tgt {
+                        this.configured_source_lang = src.clone();
+                        this.configured_target_lang = tgt.clone();
+                        this.latest_target_lang = tgt.to_uppercase();
+                    }
+                    this.engine_message = engine_msg;
 
-                    if let Some(evt) = new_event {
-                        this.latest_source_text = evt.original_text.clone();
-                        this.latest_trans_text = evt.translated_text.clone();
+                    for evt in new_events {
+                        // Streaming partials only carry the stream being produced.
+                        if !evt.is_streaming || !evt.original_text.is_empty() {
+                            this.latest_source_text = evt.original_text.clone();
+                        }
+                        if !evt.is_streaming || !evt.translated_text.is_empty() {
+                            this.latest_trans_text = evt.translated_text.clone();
+                        }
                         if this.configured_source_lang == "auto" {
                             this.latest_source_lang = evt.source_lang.to_uppercase();
                         } else {
@@ -265,6 +307,7 @@ impl VoiceBridgeApp {
                         this.latest_target_lang = this.configured_target_lang.to_uppercase();
                         this.latest_stt_ms = evt.stt_duration_ms;
                         this.latest_trans_ms = evt.translation_duration_ms;
+                        this.latest_model_used = evt.model_used.clone();
 
                         // Only insert final non-streaming events into persistent history
                         if !evt.is_streaming {
@@ -288,6 +331,7 @@ impl VoiceBridgeApp {
     }
 
     // Apply GPU / CPU hardware acceleration changes dynamically
+    #[allow(clippy::too_many_arguments)]
     fn apply_gpu_settings(
         &mut self,
         use_gpu: bool,
@@ -316,26 +360,9 @@ impl VoiceBridgeApp {
 
         let state = self.state.clone();
         self.tokio_handle.spawn(async move {
-            {
-                let mut cfg = state.config.write().await;
-                cfg.stt.use_gpu = use_gpu;
-                cfg.stt.gpu_backend = gpu_backend.clone();
-                cfg.stt.gpu_device = gpu_device;
-                cfg.stt.flash_attn = flash_attn;
-                cfg.stt.n_threads = n_threads;
-                let _ = cfg.save_default();
-            }
-
-            let mut engine = state.whisper_engine.lock().await;
-            if let Err(e) = engine.apply_hardware_settings(
-                use_gpu,
-                &gpu_backend,
-                gpu_device,
-                flash_attn,
-                n_threads,
-            ) {
-                tracing::error!("Erreur lors du changement de périphérique GPU/CPU : {}", e);
-            }
+            state
+                .apply_hardware(use_gpu, gpu_backend, gpu_device, flash_attn, n_threads)
+                .await;
         });
 
         cx.notify();
@@ -490,74 +517,31 @@ impl VoiceBridgeApp {
     }
 
     // Switch Whisper Local Model
-    fn switch_local_whisper(&mut self, meta: ModelMetadata, window: &mut Window, cx: &mut Context<Self>) {
-        // Automatically shut down local ASR server to save CPU/GPU and avoid conflict
-        self.stop_local_asr_server(cx);
-
-        let model_path = meta.default_model_name.clone();
-        let model_id = meta.id.clone();
-        let display_name = meta.name.clone();
-        let download_url = meta.download_url.clone();
-
-        if !is_model_installed(&meta) {
-            window.push_notification(
-                Notification::info("Téléchargement du modèle requis avant activation."),
-                cx,
-            );
-            self.download_model(meta, window, cx);
-            return;
+    /// Activate (and download first if needed) a local model: Whisper, Kyutai STT,
+    /// Hibiki or MADLAD-400. Shared logic with the web UI lives in `controller.rs`.
+    fn activate_local_model(&mut self, meta: ModelMetadata, window: &mut Window, cx: &mut Context<Self>) {
+        if meta.kind != KIND_TRANSLATION {
+            // Free the CPU/GPU used by the optional Python ASR server.
+            self.stop_local_asr_server(cx);
         }
-
-        let state = self.state.clone();
-        let (use_gpu, gpu_backend, gpu_device, flash_attn, lang) = {
-            let cfg = state.config.blocking_read();
-            (
-                cfg.stt.use_gpu,
-                cfg.stt.gpu_backend.clone(),
-                cfg.stt.gpu_device,
-                cfg.stt.flash_attn,
-                cfg.stt.language.clone(),
-            )
-        };
-
+        let installed = is_model_installed(&meta);
         window.push_notification(
-            Notification::info(format!("Whisper Local activé : {} (Serveur ASR éteint)", display_name)),
+            Notification::info(if installed {
+                format!("Activation de {}...", meta.name)
+            } else {
+                format!("Téléchargement de {} ({} Mo)...", meta.name, meta.file_size_mb)
+            }),
             cx,
         );
-
+        let state = self.state.clone();
+        let id = meta.id.clone();
         self.tokio_handle.spawn(async move {
-            let reload_res = {
-                let mut engine = state.whisper_engine.lock().await;
-                engine.set_language(&lang);
-                engine.reload_model_with_gpu_options(
-                    &model_path,
-                    use_gpu,
-                    &gpu_backend,
-                    gpu_device,
-                    flash_attn,
-                )
-            };
-            match reload_res {
-                Ok(()) => {
-                    let mut cfg = state.config.write().await;
-                    cfg.stt.engine_type = "whisper_local".to_string();
-                    cfg.stt.model_id = model_id;
-                    cfg.stt.model_path = model_path;
-                    if let Some(url) = download_url {
-                        cfg.stt.model_url = url;
-                    }
-                    cfg.stt.model_name = display_name;
-                    let _ = cfg.save_default();
-                    tracing::info!("Modèle Whisper local activé avec succès.");
-                }
-                Err(e) => {
-                    tracing::error!("Erreur lors du chargement du modèle: {}", e);
-                }
-            }
+            let outcome = state.activate_model(&id, None, None).await;
+            state.set_engine_message(outcome.message);
         });
-
-        self.active_engine = "whisper_local".to_string();
-        self.active_model_id = meta.id;
+        if !installed {
+            self.is_downloading = true;
+        }
         cx.notify();
     }
 
@@ -572,130 +556,68 @@ impl VoiceBridgeApp {
             meta.default_api_url.clone()
         };
 
-        // Automatically start local ASR server
-        self.start_local_asr_server(&model_name, cx);
+        // Start the bundled faster-whisper server only for the models it really serves;
+        // other server models require the user's own local server.
+        let auto_start = meta.auto_start_server;
+        if auto_start {
+            self.start_local_asr_server(&model_name, cx);
+        }
 
         let state = self.state.clone();
         let url_clone = api_url.clone();
-        let id_clone = model_id.clone();
-        let disp_clone = display_name.clone();
-
         self.tokio_handle.spawn(async move {
-            let mut cfg = state.config.write().await;
-            cfg.stt.engine_type = "remote_asr".to_string();
-            cfg.stt.api_url = url_clone;
-            cfg.stt.api_key = None;
-            cfg.stt.model_id = id_clone;
-            cfg.stt.model_name = disp_clone;
-            let _ = cfg.save_default();
-        });
-
-        self.active_engine = "remote_asr".to_string();
-        self.active_model_id = model_id;
-        self.api_url_input = api_url;
-
-        window.push_notification(
-            Notification::info(format!("Modèle {} activé — Serveur ASR auto-démarré sur port 8000.", display_name)),
-            cx,
-        );
-        cx.notify();
-    }
-
-    // Switch to Remote / Local Speaches ASR server
-    fn switch_remote_asr(&mut self, url: String, key: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let url_clone = url.clone();
-        let key_clone = key.clone();
-
-        self.tokio_handle.spawn(async move {
-            let mut cfg = state.config.write().await;
-            cfg.stt.engine_type = "remote_asr".to_string();
-            cfg.stt.api_url = url_clone;
-            cfg.stt.api_key = key_clone;
-            cfg.stt.model_id = "faster-whisper-server".to_string();
-            cfg.stt.model_name = "Serveur ASR Local (Speaches)".to_string();
-            let _ = cfg.save_default();
-        });
-
-        self.active_engine = "remote_asr".to_string();
-        self.active_model_id = "faster-whisper-server".to_string();
-        window.push_notification(
-            Notification::info("Moteur ASR basculé sur Serveur Local (Speaches/Faster-Whisper)."),
-            cx,
-        );
-        cx.notify();
-    }
-
-    // Download a model or activate server model
-    fn download_model(&mut self, meta: ModelMetadata, window: &mut Window, cx: &mut Context<Self>) {
-        if meta.download_url.is_none() || meta.default_engine != "whisper_local" {
-            // It's a server model! Switch to it and auto-start ASR server
-            self.switch_to_server_model(meta, window, cx);
-            return;
-        }
-
-        let download_url = meta.download_url.clone().unwrap();
-        let state = self.state.clone();
-        let status = state.download_status.clone();
-        let model_path = meta.default_model_name.clone();
-        let model_id = meta.id.clone();
-        let display_name = meta.name.clone();
-
-        window.push_notification(
-            Notification::info(format!("Démarrage du téléchargement : {}", meta.name)),
-            cx,
-        );
-
-        let (use_gpu, gpu_backend, gpu_device, flash_attn, lang) = {
-            let cfg = state.config.blocking_read();
-            (
-                cfg.stt.use_gpu,
-                cfg.stt.gpu_backend.clone(),
-                cfg.stt.gpu_device,
-                cfg.stt.flash_attn,
-                cfg.stt.language.clone(),
-            )
-        };
-
-        let state_clone = state.clone();
-        let path_clone = model_path.clone();
-        let id_clone = model_id.clone();
-        let name_clone = display_name.clone();
-        let url_clone = download_url.clone();
-
-        self.tokio_handle.spawn(async move {
-            match download_model_with_progress(&model_path, &download_url, &model_id, status).await {
-                Ok(_) => {
-                    tracing::info!("Modèle téléchargé avec succès : {}", path_clone);
-                    let reload_res = {
-                        let mut engine = state_clone.whisper_engine.lock().await;
-                        engine.set_language(&lang);
-                        engine.reload_model_with_gpu_options(
-                            &path_clone,
-                            use_gpu,
-                            &gpu_backend,
-                            gpu_device,
-                            flash_attn,
-                        )
-                    };
-                    if reload_res.is_ok() {
-                        let mut cfg = state_clone.config.write().await;
-                        cfg.stt.engine_type = "whisper_local".to_string();
-                        cfg.stt.model_id = id_clone;
-                        cfg.stt.model_path = path_clone;
-                        cfg.stt.model_url = url_clone;
-                        cfg.stt.model_name = name_clone;
-                        let _ = cfg.save_default();
-                        tracing::info!("Modèle Whisper chargé et actif en mémoire.");
-                    }
+            // The Python server needs a few seconds (model load) before answering.
+            let started = std::time::Instant::now();
+            loop {
+                let outcome = state.activate_model(&model_id, Some(url_clone.clone()), None).await;
+                if outcome.success || started.elapsed() > Duration::from_secs(90) {
+                    state.set_engine_message(outcome.message);
+                    break;
                 }
-                Err(e) => {
-                    tracing::error!("Erreur lors du téléchargement du modèle {}: {}", id_clone, e);
-                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
 
-        self.is_downloading = true;
+        self.api_url_input = api_url;
+        window.push_notification(
+            Notification::info(if auto_start {
+                format!("Démarrage du serveur ASR local pour {}...", display_name)
+            } else {
+                format!("Connexion à votre serveur local pour {} (127.0.0.1:8000)...", display_name)
+            }),
+            cx,
+        );
+        cx.notify();
+    }
+
+    // Switch to a local Speaches / faster-whisper server
+    fn switch_remote_asr(&mut self, url: String, key: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(e) = crate::netpolicy::ensure_local_endpoint(&url) {
+            window.push_notification(Notification::error(e), cx);
+            return;
+        }
+        let state = self.state.clone();
+        self.tokio_handle.spawn(async move {
+            let outcome = state.use_local_asr_server(url, key).await;
+            state.set_engine_message(outcome.message);
+        });
+        window.push_notification(
+            Notification::info("Connexion au serveur ASR local..."),
+            cx,
+        );
+        cx.notify();
+    }
+
+    // Select the translation engine
+    fn set_translation_engine(&mut self, engine: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let engine = engine.to_string();
+        self.translation_engine = engine.clone();
+        window.push_notification(Notification::info("Changement du moteur de traduction..."), cx);
+        self.tokio_handle.spawn(async move {
+            let outcome = state.set_translation_engine(&engine).await;
+            state.set_engine_message(outcome.message);
+        });
         cx.notify();
     }
 
@@ -742,18 +664,8 @@ impl VoiceBridgeApp {
         self.latest_target_lang = target.to_uppercase();
 
         self.tokio_handle.spawn(async move {
-            let mut cfg = state.config.write().await;
-            cfg.translation.source_lang = src.clone();
-            cfg.translation.target_lang = tgt.clone();
-            cfg.stt.language = src.clone();
-            let _ = cfg.save_default();
-
-            let mut trans = state.translation_service.write().await;
-            trans.set_languages(src.clone(), tgt.clone());
-
-            let mut engine = state.whisper_engine.lock().await;
-            engine.set_language(&src);
-            tracing::info!("Languages updated in memory and saved: source='{}', target='{}'", src, tgt);
+            state.set_languages(&src, &tgt).await;
+            tracing::info!("Langues mises à jour : source='{}', cible='{}'", src, tgt);
         });
 
         cx.notify();
@@ -763,7 +675,7 @@ impl VoiceBridgeApp {
     // RENDER: TOP TITLEBAR
     // ═══════════════════════════════════════════════════════════════
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active_engine_label = if self.active_engine == "remote_asr" {
+        let active_engine_label = if self.active_engine == ENGINE_REMOTE {
             let model_title = crate::stt::find_model(&self.active_model_id)
                 .map(|m| m.name)
                 .unwrap_or_else(|| self.active_model_id.clone());
@@ -1222,7 +1134,11 @@ impl VoiceBridgeApp {
                                                         div()
                                                             .text_xs()
                                                             .text_color(ACCENT_GREEN)
-                                                            .child(format!("{:.1}% de confiance", self.latest_confidence)),
+                                                            .child(if self.latest_model_used.is_empty() {
+                                                                "En écoute".to_string()
+                                                            } else {
+                                                                self.latest_model_used.clone()
+                                                            }),
                                                     ),
                                             )
                                             .child(
@@ -1610,19 +1526,19 @@ impl VoiceBridgeApp {
                                     .border_1()
                                     .cursor_pointer()
                                     .map(|this| {
-                                        if self.active_engine == "whisper_local" {
+                                        if self.active_engine == ENGINE_WHISPER {
                                             this.bg(rgba_hex(0x19221f)).border_color(ACCENT_GREEN)
                                         } else {
                                             this.bg(BG_CARD).border_color(BORDER_DARK).hover(|s| s.bg(BG_CARD_HOVER))
                                         }
                                     })
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        if this.active_engine != "whisper_local" {
+                                        if this.active_engine != ENGINE_WHISPER {
                                             let catalog = this.models_catalog.clone();
-                                            if let Some(target) = catalog.iter().find(|m| m.default_engine == "whisper_local" && is_model_installed(m)) {
-                                                this.switch_local_whisper(target.clone(), window, cx);
-                                            } else if let Some(target) = catalog.iter().find(|m| m.default_engine == "whisper_local") {
-                                                this.switch_local_whisper(target.clone(), window, cx);
+                                            if let Some(target) = catalog.iter().find(|m| m.default_engine == ENGINE_WHISPER && is_model_installed(m)) {
+                                                this.activate_local_model(target.clone(), window, cx);
+                                            } else if let Some(target) = catalog.iter().find(|m| m.id == "whisper_turbo_q5") {
+                                                this.activate_local_model(target.clone(), window, cx);
                                             }
                                         }
                                     }))
@@ -1637,7 +1553,7 @@ impl VoiceBridgeApp {
                                                 ),
                                             )
                                             .child(
-                                                if self.active_engine == "whisper_local" {
+                                                if self.active_engine == ENGINE_WHISPER {
                                                     div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x166534)).text_xs().text_color(rgba_hex(0xbbf7d0)).child("Actif")
                                                 } else {
                                                     div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
@@ -1645,7 +1561,7 @@ impl VoiceBridgeApp {
                                             ),
                                     )
                                     .child(
-                                        div().text_xs().text_color(TEXT_MUTED).child("100% Hors-ligne, ultra-rapide sur NVIDIA GPU (Vulkan / CUDA), Metal GPU ou CPU multithread."),
+                                        div().text_xs().text_color(TEXT_MUTED).child("100 % hors-ligne sur GPU (Metal, CUDA, Vulkan) ou CPU multithread."),
                                     ),
                             )
                             .child(
@@ -1658,16 +1574,16 @@ impl VoiceBridgeApp {
                                     .border_1()
                                     .cursor_pointer()
                                     .map(|this| {
-                                        if self.active_engine == "remote_asr" {
+                                        if self.active_engine == ENGINE_REMOTE {
                                             this.bg(rgba_hex(0x181f28)).border_color(ACCENT_CYAN)
                                         } else {
                                             this.bg(BG_CARD).border_color(BORDER_DARK).hover(|s| s.bg(BG_CARD_HOVER))
                                         }
                                     })
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        if this.active_engine != "remote_asr" {
+                                        if this.active_engine != ENGINE_REMOTE {
                                             let catalog = this.models_catalog.clone();
-                                            if let Some(target) = catalog.iter().find(|m| m.default_engine != "whisper_local") {
+                                            if let Some(target) = catalog.iter().find(|m| m.default_engine == ENGINE_REMOTE) {
                                                 this.switch_to_server_model(target.clone(), window, cx);
                                             } else {
                                                 this.start_local_server(window, cx);
@@ -1685,7 +1601,7 @@ impl VoiceBridgeApp {
                                                 div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Serveur Local / OpenAI API (Speaches)"),
                                             )
                                             .child(
-                                                if self.active_engine == "remote_asr" {
+                                                if self.active_engine == ENGINE_REMOTE {
                                                     div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x1e40af)).text_xs().text_color(rgba_hex(0xbfdbfe)).child("Actif")
                                                 } else {
                                                     div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
@@ -1695,9 +1611,70 @@ impl VoiceBridgeApp {
                                     .child(
                                         div().text_xs().text_color(TEXT_MUTED).child("Serveur ASR local haute performance (Faster-Whisper, Qwen, Voxtral, Moonshine)."),
                                     ),
+                            )
+                            .child(
+                                // Kyutai streaming card (STT 1B or Hibiki simultaneous translation)
+                                v_flex()
+                                    .id("card-kyutai-streaming")
+                                    .flex_1()
+                                    .p_4()
+                                    .rounded(px(12.))
+                                    .border_1()
+                                    .cursor_pointer()
+                                    .map(|this| {
+                                        if self.active_engine == ENGINE_KYUTAI || self.active_engine == ENGINE_HIBIKI {
+                                            this.bg(rgba_hex(0x24192b)).border_color(ACCENT_MAGENTA)
+                                        } else {
+                                            this.bg(BG_CARD).border_color(BORDER_DARK).hover(|s| s.bg(BG_CARD_HOVER))
+                                        }
+                                    })
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        if this.active_engine != ENGINE_KYUTAI && this.active_engine != ENGINE_HIBIKI {
+                                            let catalog = this.models_catalog.clone();
+                                            if let Some(target) = catalog.iter().find(|m| m.default_engine == ENGINE_KYUTAI) {
+                                                this.activate_local_model(target.clone(), window, cx);
+                                            }
+                                        }
+                                    }))
+                                    .gap_2()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_center()
+                                            .child(
+                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child(format!(
+                                                    "Streaming Kyutai ({})",
+                                                    crate::stt::models::candle_backend_label()
+                                                )),
+                                            )
+                                            .child(
+                                                if self.active_engine == ENGINE_KYUTAI || self.active_engine == ENGINE_HIBIKI {
+                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x701a75)).text_xs().text_color(rgba_hex(0xf5d0fe)).child("Actif")
+                                                } else {
+                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
+                                                },
+                                            ),
+                                    )
+                                    .child(
+                                        div().text_xs().text_color(TEXT_MUTED).child("Mots en direct (~0,5 s) avec Kyutai STT, ou traduction simultanée FR→EN avec Hibiki."),
+                                    ),
                             ),
                     ),
             )
+            .when(!self.engine_message.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .rounded(px(8.))
+                        .bg(rgba_hex(0x1a1a1e))
+                        .border_1()
+                        .border_color(BORDER_SUBTLE)
+                        .text_xs()
+                        .text_color(TEXT_BODY)
+                        .child(self.engine_message.clone()),
+                )
+            })
             .child(
                 // Section 1.5: Accélération Matérielle (GPU NVIDIA / Vulkan / CUDA / Metal / CPU)
                 v_flex()
@@ -2123,7 +2100,7 @@ impl VoiceBridgeApp {
                             .justify_between()
                             .items_center()
                             .child(
-                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Catalogue des Modèles Vocaux (Whisper Local & Serveur ASR)"),
+                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Catalogue des modèles (Kyutai, Whisper, MADLAD, serveur local)"),
                             )
                             .child(
                                 if self.is_downloading {
@@ -2140,12 +2117,14 @@ impl VoiceBridgeApp {
                         v_flex()
                             .gap_2()
                             .children(self.models_catalog.iter().map(|meta| {
-                                let is_whisper = meta.default_engine == "whisper_local";
-                                let is_active = self.active_model_id == meta.id && (
-                                    (is_whisper && self.active_engine == "whisper_local") ||
-                                    (!is_whisper && self.active_engine == "remote_asr")
-                                );
-                                let installed = if is_whisper { is_model_installed(meta) } else { true };
+                                let is_local = meta.is_local_gpu;
+                                let is_whisper = is_local;
+                                let is_active = if meta.kind == KIND_TRANSLATION {
+                                    self.translation_engine == ENGINE_MADLAD
+                                } else {
+                                    self.active_model_id == meta.id && self.active_engine == meta.default_engine
+                                };
+                                let installed = if is_local { is_model_installed(meta) } else { true };
                                 let meta_clone1 = meta.clone();
                                 let meta_clone2 = meta.clone();
                                 let size_str = if meta.file_size_mb > 0 {
@@ -2184,9 +2163,9 @@ impl VoiceBridgeApp {
                                                                     .px_1p5()
                                                                     .py_0p5()
                                                                     .rounded(px(4.))
-                                                                    .bg(if is_whisper { rgba_hex(0x14532d) } else { rgba_hex(0x1e3a5f) })
+                                                                    .bg(if meta.kind == KIND_SPEECH_TRANSLATION || meta.default_engine == ENGINE_KYUTAI { rgba_hex(0x4a1d4f) } else if meta.kind == KIND_TRANSLATION { rgba_hex(0x3f3a12) } else if is_whisper { rgba_hex(0x14532d) } else { rgba_hex(0x1e3a5f) })
                                                                     .text_xs()
-                                                                    .text_color(if is_whisper { rgba_hex(0x86efac) } else { rgba_hex(0x93c5fd) })
+                                                                    .text_color(if meta.kind == KIND_SPEECH_TRANSLATION || meta.default_engine == ENGINE_KYUTAI { rgba_hex(0xf5d0fe) } else if meta.kind == KIND_TRANSLATION { rgba_hex(0xfef08a) } else if is_whisper { rgba_hex(0x86efac) } else { rgba_hex(0x93c5fd) })
                                                                     .child(badge_text),
                                                             ),
                                                     )
@@ -2231,13 +2210,13 @@ impl VoiceBridgeApp {
                                                         .border_color(ACCENT_CYAN)
                                                         .hover(|s| s.bg(rgba_hex(0x2563eb)))
                                                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                                            this.switch_local_whisper(meta_clone1.clone(), window, cx);
+                                                            this.activate_local_model(meta_clone1.clone(), window, cx);
                                                         }))
-                                                        .child(div().text_xs().font_semibold().text_color(rgba_hex(0xbfdbfe)).child("Activer (Local GPU)"))
+                                                        .child(div().text_xs().font_semibold().text_color(rgba_hex(0xbfdbfe)).child("Activer (local)"))
                                                         .into_any_element()
                                                 } else {
                                                     // Whisper local model needs download
-                                                    let is_this_downloading = self.is_downloading && self.download_msg.contains(&meta.name);
+                                                    let is_this_downloading = self.is_downloading && self.download_model_id == meta.id;
                                                     div()
                                                         .id(SharedString::from(format!("dl-{}", model_id_key)))
                                                         .cursor_pointer()
@@ -2249,7 +2228,7 @@ impl VoiceBridgeApp {
                                                         .border_color(BORDER_DARK)
                                                         .hover(|s| s.bg(BG_CARD_HOVER))
                                                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                                            this.download_model(meta_clone2.clone(), window, cx);
+                                                            this.activate_local_model(meta_clone2.clone(), window, cx);
                                                         }))
                                                         .child(div().text_xs().font_semibold().text_color(TEXT_BODY).child(
                                                             if is_this_downloading {
@@ -2397,6 +2376,71 @@ impl VoiceBridgeApp {
                                     })),
                             ),
                     ),
+            )
+            .child(self.render_translation_engine_card(cx))
+    }
+
+    fn render_translation_engine_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let madlad_installed = crate::stt::models::is_model_id_installed(crate::stt::models::MADLAD_MODEL_ID);
+        let hibiki_active = self.active_engine == ENGINE_HIBIKI;
+        let options: Vec<(&'static str, String, String)> = vec![
+            (
+                ENGINE_MADLAD,
+                format!("MADLAD-400 local ({})", crate::stt::models::candle_backend_label()),
+                if madlad_installed {
+                    "Traduction intégrée, 400 langues, aucun envoi réseau.".to_string()
+                } else {
+                    "Non installé — cliquer pour télécharger (1,6 Go).".to_string()
+                },
+            ),
+            (
+                ENGINE_LOCAL_LLM,
+                "LLM local (LM Studio / Ollama)".to_string(),
+                format!("Serveur compatible OpenAI local : {}", self.translation_llm_url),
+            ),
+            (ENGINE_OFF, "Désactivée".to_string(), "Affiche uniquement la transcription.".to_string()),
+        ];
+        v_flex()
+            .p_5()
+            .rounded(px(14.))
+            .bg(BG_CARD)
+            .border_1()
+            .border_color(BORDER_DARK)
+            .gap_3()
+            .child(div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Moteur de traduction (100 % local)"))
+            .when(hibiki_active, |this| {
+                this.child(
+                    div().text_xs().text_color(ACCENT_YELLOW).child(
+                        "Hibiki est actif : il traduit directement la voix française en anglais, ce réglage ne s'applique qu'à Whisper / Kyutai STT.",
+                    ),
+                )
+            })
+            .child(
+                h_flex().gap_3().children(options.into_iter().map(|(id, title, hint)| {
+                    let is_sel = self.translation_engine == id;
+                    div()
+                        .flex_1()
+                        .id(SharedString::from(format!("trans-engine-{}", id)))
+                        .cursor_pointer()
+                        .p_3()
+                        .rounded(px(8.))
+                        .map(|this| {
+                            if is_sel {
+                                this.bg(rgba_hex(0x2a1b38)).border_1().border_color(ACCENT_MAGENTA)
+                            } else {
+                                this.bg(rgba_hex(0x1a1a1e)).border_1().border_color(BORDER_SUBTLE).hover(|s| s.bg(BG_CARD_HOVER))
+                            }
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.set_translation_engine(id, window, cx);
+                        }))
+                        .child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(div().text_xs().font_semibold().text_color(if is_sel { ACCENT_MAGENTA } else { TEXT_MAIN }).child(title))
+                                .child(div().text_xs().text_color(TEXT_MUTED).child(hint)),
+                        )
+                })),
             )
     }
 
@@ -2958,8 +3002,8 @@ fn resolve_asr_script_path() -> PathBuf {
         return local_rel;
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent() {
             // Windows installer / portable directory beside binary
             let beside_exe = exe_dir.join("scripts").join("asr_server.py");
             if beside_exe.is_file() {
@@ -2976,7 +3020,6 @@ fn resolve_asr_script_path() -> PathBuf {
                 }
             }
         }
-    }
 
     #[cfg(target_os = "linux")]
     {
@@ -3045,14 +3088,13 @@ fn resolve_python_command() -> (String, Vec<String>) {
             probe.creation_flags(CREATE_NO_WINDOW);
         }
 
-        if let Ok(status) = probe.status() {
-            if status.success() {
+        if let Ok(status) = probe.status()
+            && status.success() {
                 return (
                     (*bin).to_string(),
                     prefix_args.iter().map(|s| (*s).to_string()).collect(),
                 );
             }
-        }
     }
 
     #[cfg(windows)]
@@ -3095,12 +3137,11 @@ impl Drop for VoiceBridgeApp {
         self.state.is_shutting_down.store(true, Ordering::SeqCst);
         self.state.is_recording.store(false, Ordering::SeqCst);
 
-        if let Ok(mut guard) = self.local_asr_child.lock() {
-            if let Some(mut child) = guard.take() {
+        if let Ok(mut guard) = self.local_asr_child.lock()
+            && let Some(mut child) = guard.take() {
                 terminate_asr_child(&mut child);
                 tracing::info!("Serveur ASR local arrêté lors de la fermeture de VoiceBridge.");
             }
-        }
 
         // Explicitly release Metal GPU residency sets before AppKit's `-[NSApplication terminate:]`
         // calls C `exit()`, avoiding `GGML_ASSERT([rsets->data count] == 0)` in `ggml_metal_rsets_free`.

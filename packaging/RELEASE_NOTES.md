@@ -1,45 +1,33 @@
-## 🚀 VoiceBridge v0.3.0 — Notes de version (Rupture Technologique Streaming)
+## VoiceBridge — prochaine version (non publiée)
 
-Cette version majeure marque le passage de VoiceBridge d'une architecture par fenêtres audio (chunks batch) à une **architecture de streaming audio-texte continue à ultra-faible latence**, inspirée des travaux de recherche de Kyutai Labs (*Moshi*, *Mimi*, *Delayed Streams Modeling* et *Hibiki* - [arXiv:2410.00037](https://arxiv.org/abs/2410.00037)).
+### ⚠️ Correctifs importants par rapport à la v0.3.0
 
----
+La v0.3.0 annonçait un codec Mimi, un moteur Kyutai STT et une traduction Hibiki qui étaient **simulés** (sorties générées à partir de l'énergie du signal et d'une liste de phrases fixes). Ils sont remplacés par les **vrais modèles Kyutai**, exécutés via la crate officielle `moshi`.
 
-### 🌟 Nouveautés Majeures
+### 🌟 Nouveautés
 
-#### 1. Codec Audio Neuronal Causal Mimi (24 kHz / 12,5 Hz)
-- **Traitement causal par trames de 80 ms** : L'audio capturé est converti en flux 24 kHz et traité par pas de 1 920 échantillons (80 ms), avec seulement **80 ms de lookahead** (latence algorithmique aller-retour < 160 ms).
-- **Split RVQ (Residual Vector Quantization)** :
-  - **Codebook 0 (Sémantique)** : Distillation des représentations phonétiques et linguistiques de WavLM.
-  - **Codebooks 1 à 7 (Acoustique)** : Modélisation des détails acoustiques pour la reconstruction haute fidélité (débit ultra-compact de 1,1 kbps).
-- **Buffer audio causal** : Garantie d'absence de gigue (*zero-underflow*) et élimination des découpages artificiels.
+- **Kyutai STT 1B streaming (FR/EN)** — poids `kyutai/stt-1b-en_fr-candle`, codec Mimi réel, VAD sémantique pour la fin de phrase, mots affichés en direct (~0,5 s).
+- **Kyutai Hibiki 1B / 2B** — traduction simultanée parole française → texte anglais.
+- **Traduction 100 % locale MADLAD-400 3B** (400 langues) intégrée au binaire, ou LLM local (LM Studio / Ollama). Les services en ligne (Google, MyMemory, LibreTranslate) sont supprimés.
+- **`--input-wav`** : sous-titrer un enregistrement au lieu du micro.
+- Téléchargements de modèles multi-fichiers, figés sur une révision Hugging Face, vérifiés par **SHA-256**, avec reprise des fichiers partiels.
 
-#### 2. Moteur STT Streaming sub-seconde & Semantic VAD (Kyutai 1B FR/EN)
-- **Latence fixe et bornée à 500 ms** : Grâce au paradigme *Delayed Streams Modeling*, les tokens textuels sont décodés avec un décalage de seulement 6 pas (480 ms ~ 500 ms) par rapport à la voix, divisant par 4 la latence perçue par rapport aux découpages Whisper classiques (1 500 ms à 3 500 ms).
-- **Semantic VAD (Détection Vocale Sémantique)** : Le modèle analyse directement les probabilités des tokens linguistiques pour distinguer le début et la fin de parole réelle des respirations, bruits de micro ou hésitations ("euh...").
-- **Horodatages au mot près (*Word-Level Timestamps*)** : Chaque mot est émis avec ses marqueurs temporels `start_ms` et `end_ms` précis à 80 ms près.
-- **Coexistence harmonieuse des moteurs** : Possibilité de basculer instantanément dans l'interface entre *Kyutai Streaming*, *Whisper Local GPU/CPU* et *Remote API (Speaches/vLLM)*.
+### 🔒 Sécurité
 
-#### 3. Traduction Simultanée en Direct (Inspirée d'Hibiki)
-- **Politique adaptative Wait-$k$** : La traduction n'attend plus la fin de la phrase. Les mots et clauses traduits sont émis au fil de l'eau dès que le contexte grammatical source est suffisant.
-- **Streaming mot à mot bilingue** : Traduction simultanée continue optimisée pour le Français et l'Anglais.
+- API web limitée aux requêtes de même origine vers `localhost` (suppression du CORS permissif, protection CSRF et DNS-rebinding) : un site web ne peut plus lire les clés API ni rediriger l'audio du micro.
+- Endpoints ASR / LLM limités aux adresses locales (loopback / réseau local). Clés API masquées dans l'API.
 
-#### 4. Overlay OBS Studio & Interface GPUI Temps Réel
-- **Affichage 'Word Ticker' dynamique** : Dans `obs.html`, les mots apparaissent mot par mot avec une animation fluide d'apparition progressive (`@keyframes fadeInWord`) et un indicateur pulsé en direct.
-- **Protocole d'événements streaming sub-100ms** : Événements SSE / WebSocket enrichis pour diffuser les tokens instantanément aux clients OBS et à l'interface GPUI.
+### 🐛 Corrections
 
-#### 5. Framework Machine Learning Candle en Rust Natif (CUDA & Metal)
-- **Intégration directe sans bridge externe** : Utilisation des crates Hugging Face `candle-core`, `candle-nn` et `candle-transformers` directement en Rust.
-- **Accélération matérielle complète** :
-  - **NVIDIA CUDA** sur Windows x64 (RTX 5060, RTX 40xx/30xx) avec allocation mémoire VRAM contenue (~1,2 Go).
-  - **Apple Silicon Metal** sur macOS.
-  - **Fallback CPU optimisé multithread**.
+- Inférence Whisper déplacée hors du runtime async ; sous-titres traités dans l'ordre.
+- Échec de rechargement d'un modèle Whisper : l'ancien modèle est restauré.
+- Téléchargement : plus de blocage « téléchargement en cours » après une erreur ; fichiers tronqués rejetés.
+- `--config` respecté pour toutes les sauvegardes (écriture atomique).
+- VAD : la durée minimale ne compte que la parole réelle ; silence final rogné.
+- Rééchantillonnage avec filtre anti-repliement et sans perte entre blocs (`rubato`).
+- `scripts/asr_server.py` ne substitue plus silencieusement faster-whisper aux modèles Qwen3 / Voxtral / Canary / VibeVoice.
+- Suppression des valeurs factices de l'interface (« 98,4 % de confiance », latences de démonstration) et des polices chargées depuis Google Fonts.
 
----
+### 🧪 Tests
 
-### 🧪 Validation & Tests Unitaires
-- Suite de tests unitaires portée à **13 tests automatisés** couvrant l'ensemble du pipeline :
-  - Mathématiques et débits du codec Mimi
-  - Précision du buffer causal 24 kHz (1 920 samples)
-  - Alignement temporel des tokens et transitions du Semantic VAD
-  - Streaming simultané Wait-$k$ Hibiki
-  - Rétrocompatibilité totale des modèles Whisper locaux et de la traduction de secours.
+31 tests unitaires hors ligne (sécurité HTTP, politique réseau, VAD, rééchantillonnage, SentencePiece, catalogue, configuration, téléchargeur) et 4 tests sur les vrais modèles (`cargo test --release -- --ignored`).

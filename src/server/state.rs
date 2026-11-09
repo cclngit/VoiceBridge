@@ -1,12 +1,19 @@
 use crate::config::AppConfig;
+use crate::pipeline::{StreamingWorker, Utterance};
 use crate::stt::{DownloadStatus, GpuDeviceInfo, WhisperEngine};
 use crate::translate::TranslationService;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, Mutex, RwLock};
+
+static EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_event_id(prefix: &str, millis: i64) -> String {
+    format!("{prefix}_{millis}_{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineEvent {
@@ -21,11 +28,13 @@ pub struct PipelineEvent {
     pub translation_duration_ms: u128,
     pub total_duration_ms: u128,
     pub model_used: String,
+    /// Partial (in-progress) sentence from a streaming engine; replaced by later events.
     #[serde(default)]
     pub is_streaming: bool,
 }
 
 impl PipelineEvent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         original: String,
         translated: String,
@@ -38,7 +47,7 @@ impl PipelineEvent {
     ) -> Self {
         let now = Local::now();
         Self {
-            id: format!("evt_{}", now.timestamp_millis()),
+            id: next_event_id("evt", now.timestamp_millis()),
             timestamp: now.format("%H:%M:%S").to_string(),
             speaker,
             original_text: original,
@@ -54,8 +63,8 @@ impl PipelineEvent {
     }
 
     pub fn new_streaming(
-        word: String,
-        translated_word: String,
+        original_partial: String,
+        translated_partial: String,
         speaker: Option<String>,
         source_lang: String,
         target_lang: String,
@@ -64,11 +73,11 @@ impl PipelineEvent {
     ) -> Self {
         let now = Local::now();
         Self {
-            id: format!("stream_{}", now.timestamp_millis()),
+            id: next_event_id("stream", now.timestamp_millis()),
             timestamp: now.format("%H:%M:%S").to_string(),
             speaker,
-            original_text: word,
-            translated_text: translated_word,
+            original_text: original_partial,
+            translated_text: translated_partial,
             source_lang,
             target_lang,
             stt_duration_ms: stt_ms,
@@ -94,6 +103,7 @@ pub struct SystemStatus {
     pub download_percent: f32,
     pub download_message: String,
     pub download_speed_mb_s: f32,
+    pub download_error: Option<String>,
     pub active_model_id: String,
     pub hardware_backend: String,
     pub use_gpu: bool,
@@ -102,6 +112,18 @@ pub struct SystemStatus {
     pub flash_attn: bool,
     pub gpu_devices: Vec<GpuDeviceInfo>,
     pub compiled_gpu_backends: Vec<String>,
+    pub translation_engine: String,
+    pub streaming_engine: Option<String>,
+    pub engine_message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamSend {
+    Sent,
+    /// The worker's buffer is full: it is slower than real time.
+    Lagging,
+    /// No streaming model loaded (yet).
+    NoWorker,
 }
 
 #[derive(Clone)]
@@ -114,13 +136,20 @@ pub struct AppState {
     pub audio_device: String,
     pub config: Arc<RwLock<AppConfig>>,
     pub whisper_engine: Arc<Mutex<WhisperEngine>>,
-    pub kyutai_engine: Arc<Mutex<crate::stt::KyutaiStreamingSttEngine>>,
-    pub hibiki_translator: Arc<Mutex<crate::translate::HibikiStreamingTranslator>>,
+    /// Active Kyutai / Hibiki worker (when a streaming engine is selected).
+    pub streaming_worker: Arc<std::sync::Mutex<Option<StreamingWorker>>>,
+    /// Serialises model activations (download completion, GUI and HTTP requests).
+    pub activation_lock: Arc<Mutex<()>>,
+    /// Last human-readable message about engine activation (shown in the UIs).
+    pub engine_message: Arc<std::sync::Mutex<String>>,
     pub download_status: Arc<RwLock<DownloadStatus>>,
     pub translation_service: Arc<RwLock<TranslationService>>,
+    utterance_tx: mpsc::UnboundedSender<Utterance>,
+    utterance_rx: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<Utterance>>>>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_tx: broadcast::Sender<PipelineEvent>,
         rms_rx: watch::Receiver<f32>,
@@ -131,29 +160,7 @@ impl AppState {
         download_status: Arc<RwLock<DownloadStatus>>,
         translation_service: Arc<RwLock<TranslationService>>,
     ) -> Self {
-        let candle_dev = crate::stt::kyutai_engine::resolve_candle_device(
-            config.stt.use_gpu,
-            config.stt.gpu_device,
-        );
-        let kyutai_config = crate::stt::KyutaiSttConfig {
-            model_id: "kyutai/stt-1b-en_fr".to_string(),
-            language: config.stt.language.clone(),
-            ..Default::default()
-        };
-        let kyutai_engine = Arc::new(Mutex::new(crate::stt::KyutaiStreamingSttEngine::new(
-            kyutai_config,
-            candle_dev,
-        )));
-
-        let hibiki_config = crate::translate::HibikiConfig {
-            source_lang: config.translation.source_lang.clone(),
-            target_lang: config.translation.target_lang.clone(),
-            ..Default::default()
-        };
-        let hibiki_translator = Arc::new(Mutex::new(
-            crate::translate::HibikiStreamingTranslator::new(hibiki_config),
-        ));
-
+        let (utterance_tx, utterance_rx) = mpsc::unbounded_channel();
         Self {
             event_tx,
             history: Arc::new(RwLock::new(VecDeque::with_capacity(100))),
@@ -163,18 +170,24 @@ impl AppState {
             audio_device,
             config: Arc::new(RwLock::new(config)),
             whisper_engine,
-            kyutai_engine,
-            hibiki_translator,
+            streaming_worker: Arc::new(std::sync::Mutex::new(None)),
+            activation_lock: Arc::new(Mutex::new(())),
+            engine_message: Arc::new(std::sync::Mutex::new(String::new())),
             download_status,
             translation_service,
+            utterance_tx,
+            utterance_rx: Arc::new(std::sync::Mutex::new(Some(utterance_rx))),
         }
     }
 
     /// Synchronously stops audio ingestion, waits for any in-flight GPU inference to finish,
-    /// and deallocates Whisper GPU residency sets before AppKit / C `exit()` runs.
+    /// and deallocates Whisper / Candle GPU resources before AppKit / C `exit()` runs.
     pub fn shutdown_sync(&self) {
         self.is_shutting_down.store(true, Ordering::SeqCst);
         self.is_recording.store(false, Ordering::SeqCst);
+        if let Ok(mut slot) = self.streaming_worker.lock() {
+            slot.take();
+        }
         for _ in 0..400 {
             if let Ok(mut engine) = self.whisper_engine.try_lock() {
                 engine.shutdown();
@@ -182,6 +195,39 @@ impl AppState {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        tracing::warn!("Whisper toujours occupé après 2 s : arrêt sans libération explicite.");
+    }
+
+    pub(crate) fn take_utterance_receiver(&self) -> Option<mpsc::UnboundedReceiver<Utterance>> {
+        self.utterance_rx.lock().ok().and_then(|mut r| r.take())
+    }
+
+    pub fn submit_utterance(&self, utterance: Utterance) {
+        let _ = self.utterance_tx.send(utterance);
+    }
+
+    /// Forward 16 kHz audio to the streaming worker without blocking.
+    pub fn send_to_streaming_worker(&self, pcm16: Vec<f32>) -> StreamSend {
+        match self.streaming_worker.lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(w) if w.try_send(pcm16) => StreamSend::Sent,
+                Some(_) => StreamSend::Lagging,
+                None => StreamSend::NoWorker,
+            },
+            Err(_) => StreamSend::NoWorker,
+        }
+    }
+
+    pub fn set_engine_message(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        tracing::info!("{}", msg);
+        if let Ok(mut m) = self.engine_message.lock() {
+            *m = msg;
+        }
+    }
+
+    pub fn engine_message(&self) -> String {
+        self.engine_message.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
     pub async fn add_event(&self, event: PipelineEvent) {
@@ -190,6 +236,7 @@ impl AppState {
             history.pop_front();
         }
         history.push_back(event.clone());
+        drop(history);
         let _ = self.event_tx.send(event);
     }
 
@@ -199,14 +246,19 @@ impl AppState {
 
     pub async fn get_status(&self) -> SystemStatus {
         let current_volume = *self.rms_rx.borrow();
-        let history = self.history.read().await;
-        let cfg = self.config.read().await;
-        let dl = self.download_status.read().await;
+        let total = self.history.read().await.len();
+        let cfg = self.config.read().await.clone();
+        let dl = self.download_status.read().await.clone();
         let hw_label = crate::stt::active_hardware_summary(
             cfg.stt.use_gpu,
             &cfg.stt.gpu_backend,
             cfg.stt.gpu_device,
         );
+        let streaming_engine = self
+            .streaming_worker
+            .lock()
+            .ok()
+            .and_then(|w| w.as_ref().map(|w| format!("{:?} ({})", w.kind, w.device_label)));
 
         SystemStatus {
             is_recording: self.is_recording.load(Ordering::Relaxed),
@@ -216,11 +268,12 @@ impl AppState {
             source_lang: cfg.translation.source_lang.clone(),
             target_lang: cfg.translation.target_lang.clone(),
             current_volume,
-            total_transcriptions: history.len(),
+            total_transcriptions: total,
             is_downloading: dl.is_downloading,
             download_percent: dl.percent,
             download_message: dl.status_message.clone(),
             download_speed_mb_s: dl.speed_mb_s,
+            download_error: dl.error.clone(),
             active_model_id: cfg.stt.model_id.clone(),
             hardware_backend: hw_label,
             use_gpu: cfg.stt.use_gpu,
@@ -232,6 +285,9 @@ impl AppState {
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect(),
+            translation_engine: cfg.translation.engine.clone(),
+            streaming_engine,
+            engine_message: self.engine_message(),
         }
     }
 }

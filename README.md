@@ -15,7 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-Ultra-fast, 100% offline real-time speech recognition and multilingual translation pipeline written in **Rust** for **macOS, Windows, and Linux** (`x86_64` & `ARM64`). Powered by a hardware-accelerated native **GPUI** desktop interface (Metal / DirectX / Vulkan), a multi-model STT/ASR engine (Whisper GPU/CPU, Qwen3-ASR, Voxtral, Canary, Moonshine, VibeVoice), a transparent **OBS Studio** subtitle overlay, zero-disk in-memory audio streaming, and automatic local ASR server lifecycle management.
+Real-time speech recognition and translation pipeline written in **Rust** for **macOS, Windows, and Linux** (`x86_64` & `ARM64`), running **100% locally**: audio and text never leave your machine (the only network access is the one-time download of model weights from Hugging Face, pinned and SHA-256 verified). Native **GPUI** desktop interface, local STT engines (**Whisper** via whisper.cpp, **Kyutai STT 1B** streaming), **Kyutai Hibiki** simultaneous FR→EN speech translation, in-process **MADLAD-400** text translation (400 languages), and a transparent **OBS Studio** subtitle overlay.
 
 ---
 
@@ -25,7 +25,8 @@ Ultra-fast, 100% offline real-time speech recognition and multilingual translati
 | :--- | :--- | :--- |
 | **OS Support** | Environment-dependent scripts | **Native Cross-Platform**: macOS (CoreAudio/Metal), Windows (WASAPI/DirectX), Linux (ALSA/Wayland/X11) |
 | **Desktop Interface** | None or basic web page | **60–120 FPS native GPUI app**, Cyber Neon Dark design, instant responsiveness |
-| **STT / ASR Models** | Whisper Tiny only | **Multi-Model**: Whisper (Metal / CUDA / Vulkan / ROCm / CPU), Qwen3-ASR, Voxtral, Canary, VibeVoice, Moonshine |
+| **STT / ASR Models** | Whisper Tiny only | **Whisper** (Metal / CUDA / Vulkan / ROCm / CPU), **Kyutai STT 1B streaming** (Candle, Metal / CUDA / CPU), optional local OpenAI-compatible server |
+| **Translation** | Online APIs | **100% local**: MADLAD-400 3B in-process, Kyutai Hibiki (FR→EN speech), or a local LLM server (LM Studio / Ollama) |
 | **ASR Server Lifecycle** | Manual / Separate scripts | **100% automatic start & shutdown** based on selected model (`.venv`, `python3`, `python`, `py -3`) |
 | **OBS Studio Overlay** | Opaque static web page | **Dedicated transparent OBS overlay (`/obs`)** with customizable themes (Dual, Glow, Netflix, Boxed) |
 | **VAD Customization** | Fixed hardcoded parameters | **Live-tunable RMS sensitivity, end-of-speech silence, and segment durations** |
@@ -82,9 +83,15 @@ VoiceBridge/
     │   ├── models.rs           # Full catalog of local Whisper & server ASR models
     │   ├── downloader.rs       # Async streaming model downloader with live progress tracking
     │   └── mod.rs              # STT types & engine exports
-    ├── translate/              # Machine Translation engine
-    │   ├── engine.rs           # Smart translation (OpenAI / Ollama / LibreTranslate / Fallback)
-    │   └── mod.rs              # TranslationService export
+    ├── translate/              # Local machine translation
+    │   ├── engine.rs           # TranslationService (MADLAD-400 / local LLM / off)
+    │   ├── madlad_engine.rs    # MADLAD-400 3B (quantized T5) in-process with Candle
+    │   ├── hibiki_engine.rs    # Kyutai Hibiki simultaneous FR→EN speech translation
+    │   └── mod.rs              # Exports
+    ├── ml/                     # Candle device selection & pure-Rust SentencePiece decoder
+    ├── pipeline.rs             # Audio router, VAD segment worker, streaming workers, translation queue
+    ├── controller.rs           # Model download / activation shared by the GUI and the HTTP API
+    ├── netpolicy.rs            # Local-only endpoint policy (loopback / LAN)
     ├── server/                 # Embedded HTTP & SSE server (Axum)
     │   ├── routes.rs           # REST endpoints, live stream SSE, and HTML handlers
     │   ├── state.rs            # Thread-safe shared state across GUI, audio, and network
@@ -111,8 +118,28 @@ VoiceBridge supports two model categories with seamless switching:
 
 ### 2. Local OpenAI-Compatible ASR Server Models
 
-- **Qwen3-ASR-1.7B, Voxtral, Canary, VibeVoice, Moonshine**:
-- **Automatic launch**: Selecting a server-backed model automatically spawns `scripts/asr_server.py` on port `8000` and routes audio segments to it.
+- **faster-whisper (Base / Large-v3-Turbo)**: selecting them automatically spawns the bundled `scripts/asr_server.py` on `127.0.0.1:8000`.
+- **Qwen3-ASR, Voxtral, Canary, VibeVoice**: require **your own** local server (vLLM, Speaches...) serving that model on `127.0.0.1:8000`; VoiceBridge only connects to it. Only loopback / LAN addresses are accepted.
+
+### 3. Kyutai streaming engines (Candle, in-process)
+
+- **Kyutai STT 1B (FR/EN)** — `kyutai/stt-1b-en_fr-candle`: words appear ~0.5 s after being spoken; sentences are closed by the model's semantic VAD. Real-time factor ≈ 0.45 on an Apple M4 (Metal).
+- **Kyutai Hibiki 1B / 2B** — French speech → English text, simultaneous translation. Real-time factor ≈ 0.8 for the 1B model on an Apple M4. A Metal or CUDA GPU is recommended: on CPU (e.g. Vulkan-only Windows builds) real time is not guaranteed.
+
+### 4. Local translation
+
+- **MADLAD-400 3B** (`jbochi/madlad400-3b-mt`, 4-bit, 1.6 GB): default engine, translates Whisper / Kyutai transcripts into ~400 languages in a few hundred milliseconds on GPU.
+- **Local LLM**: any OpenAI-compatible chat server on this machine or the LAN (LM Studio, Ollama, llama.cpp).
+
+### 5. Testing with a recording
+
+`VoiceBridge --headless --input-wav speech.wav` feeds a WAV file (played in real time) instead of the microphone. Real-model tests: `VB_TEST_WAV_FR=fr.wav cargo test --release -- --ignored`.
+
+---
+
+## 🔒 Security
+
+The embedded web server only accepts same-origin requests addressed to `localhost` / `127.0.0.1` (no CORS, `Origin` / `Sec-Fetch-Site` checks, DNS-rebinding protection). API keys are masked in `GET /api/config`. Binding `server.host` to `0.0.0.0` exposes the interface to your LAN.
 
 ---
 

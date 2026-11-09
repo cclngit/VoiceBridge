@@ -40,8 +40,6 @@ pub struct WhisperEngine {
     active_hw_label: String,
 }
 
-unsafe impl Send for WhisperEngine {}
-
 static ATEXIT_ONCE: Once = Once::new();
 static ATEXIT_WHISPER: std::sync::Mutex<Option<Weak<tokio::sync::Mutex<WhisperEngine>>>> =
     std::sync::Mutex::new(None);
@@ -52,8 +50,8 @@ unsafe extern "C" {
 
 extern "C" fn whisper_atexit_cleanup() {
     let weak_opt = ATEXIT_WHISPER.lock().ok().and_then(|mut g| g.take());
-    if let Some(weak) = weak_opt {
-        if let Some(engine_arc) = weak.upgrade() {
+    if let Some(weak) = weak_opt
+        && let Some(engine_arc) = weak.upgrade() {
             for _ in 0..400 {
                 if let Ok(mut engine) = engine_arc.try_lock() {
                     engine.shutdown();
@@ -62,7 +60,6 @@ extern "C" fn whisper_atexit_cleanup() {
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
-    }
 }
 
 /// Registers a LIFO `atexit` safety net *after* `WhisperEngine::new` has initialized
@@ -78,7 +75,7 @@ pub fn register_atexit_whisper_cleanup(engine: &Arc<tokio::sync::Mutex<WhisperEn
 }
 
 fn format_whisper_display_name(path_str: &str, active_backend_label: &str) -> String {
-    if let Some(meta) = crate::stt::find_model_by_path(path_str) {
+    if let Some(meta) = crate::stt::models::find_model_by_path(path_str) {
         let default_hw = crate::stt::active_whisper_backend_label();
         if default_hw == active_backend_label {
             meta.name
@@ -98,16 +95,6 @@ fn format_whisper_display_name(path_str: &str, active_backend_label: &str) -> St
 }
 
 impl WhisperEngine {
-    #[allow(dead_code)]
-    pub fn new<P: AsRef<Path>>(
-        model_path: P,
-        language: &str,
-        n_threads: usize,
-        use_gpu: bool,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::new_with_gpu_options(model_path, language, n_threads, use_gpu, "auto", 0, false)
-    }
-
     pub fn new_with_gpu_options<P: AsRef<Path>>(
         model_path: P,
         language: &str,
@@ -128,7 +115,7 @@ impl WhisperEngine {
         let path_str = model_path
             .as_ref()
             .to_str()
-            .ok_or_else(|| "Invalid model path")?;
+            .ok_or("Invalid model path")?;
 
         tracing::info!(
             "Loading Whisper model from '{}' (Target: {}, GPU enabled: {}, device: {}, flash_attn: {})...",
@@ -187,7 +174,6 @@ impl WhisperEngine {
         &self.active_hw_label
     }
 
-    #[allow(dead_code)]
     pub fn model_path(&self) -> &str {
         &self.model_path
     }
@@ -206,29 +192,6 @@ impl WhisperEngine {
 
     pub fn set_n_threads(&mut self, n_threads: usize) {
         self.n_threads = n_threads.max(1) as i32;
-    }
-
-    pub fn reload_model<P: AsRef<Path>>(
-        &mut self,
-        model_path: P,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let use_gpu = self.use_gpu;
-        let backend = self.gpu_backend.clone();
-        let dev = self.gpu_device;
-        let flash = self.flash_attn;
-        self.reload_model_with_gpu_options(model_path, use_gpu, &backend, dev, flash)
-    }
-
-    #[allow(dead_code)]
-    pub fn reload_model_with_gpu<P: AsRef<Path>>(
-        &mut self,
-        model_path: P,
-        use_gpu: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let backend = self.gpu_backend.clone();
-        let dev = self.gpu_device;
-        let flash = self.flash_attn;
-        self.reload_model_with_gpu_options(model_path, use_gpu, &backend, dev, flash)
     }
 
     pub fn apply_hardware_settings(
@@ -267,7 +230,7 @@ impl WhisperEngine {
         let path_str = model_path
             .as_ref()
             .to_str()
-            .ok_or_else(|| "Invalid model path")?;
+            .ok_or("Invalid model path")?;
 
         tracing::info!(
             "Dynamically reloading Whisper model from '{}' (Target: {}, GPU enabled: {}, device: {}, flash_attn: {})...",
@@ -279,8 +242,49 @@ impl WhisperEngine {
         );
 
         // Release previous context & GPU residency sets before allocating the new model
+        // (keeps peak VRAM usage low). If loading fails, the previous model is restored.
         self.inner = None;
 
+        match Self::load_context(path_str, ctx_params, effective_gpu, resolved_label) {
+            Ok((inner, active_hw_label)) => {
+                self.inner = Some(inner);
+                self.model_path = path_str.to_string();
+                self.use_gpu = use_gpu;
+                self.gpu_backend = gpu_backend.to_string();
+                self.gpu_device = gpu_device;
+                self.flash_attn = flash_attn;
+                self.active_hw_label = active_hw_label;
+                self.model_name = format_whisper_display_name(path_str, &self.active_hw_label);
+                tracing::info!("Model '{}' reloaded successfully.", self.model_name);
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Whisper reload failed ({}); restoring previous model '{}'.", e, self.model_path);
+                let (prev_gpu, prev_dev, prev_label) =
+                    crate::stt::resolve_gpu_selection(self.use_gpu, &self.gpu_backend, self.gpu_device);
+                let mut prev_params = WhisperContextParameters::default();
+                prev_params.use_gpu(prev_gpu);
+                prev_params.gpu_device(prev_dev);
+                prev_params.flash_attn(prev_gpu && self.flash_attn);
+                let prev_path = self.model_path.clone();
+                match Self::load_context(&prev_path, prev_params, prev_gpu, prev_label) {
+                    Ok((inner, label)) => {
+                        self.inner = Some(inner);
+                        self.active_hw_label = label;
+                    }
+                    Err(e2) => tracing::error!("Unable to restore previous Whisper model: {}", e2),
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn load_context(
+        path_str: &str,
+        ctx_params: WhisperContextParameters,
+        effective_gpu: bool,
+        resolved_label: String,
+    ) -> Result<(WhisperInner, String), Box<dyn std::error::Error + Send + Sync>> {
         let (ctx, active_hw_label) = match WhisperContext::new_with_params(path_str, ctx_params) {
             Ok(c) => (
                 c,
@@ -307,17 +311,12 @@ impl WhisperEngine {
         let state = ctx
             .create_state()
             .map_err(|e| format!("Failed to create Whisper state: {:?}", e))?;
+        Ok((WhisperInner { state, _ctx: ctx }, active_hw_label))
+    }
 
-        self.inner = Some(WhisperInner { state, _ctx: ctx });
-        self.model_path = path_str.to_string();
-        self.use_gpu = use_gpu;
-        self.gpu_backend = gpu_backend.to_string();
-        self.gpu_device = gpu_device;
-        self.flash_attn = flash_attn;
-        self.active_hw_label = active_hw_label;
-        self.model_name = format_whisper_display_name(path_str, &self.active_hw_label);
-        tracing::info!("Model '{}' reloaded successfully.", self.model_name);
-        Ok(())
+    /// Whether a model is currently loaded and usable.
+    pub fn is_loaded(&self) -> bool {
+        self.inner.is_some() && !self.shutting_down
     }
 
     /// Transcribe 16kHz mono f32 samples
@@ -445,19 +444,22 @@ struct RemoteTranscriptionResponse {
 impl RemoteAsrClient {
     pub fn new() -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(12))
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         Self { client }
     }
 
     pub async fn health_check(&self, url: &str, api_key: Option<&str>) -> bool {
+        if !crate::netpolicy::is_local_endpoint(url) {
+            return false;
+        }
         let mut req = self.client.get(url);
-        if let Some(key) = api_key {
-            if !key.is_empty() {
+        if let Some(key) = api_key
+            && !key.is_empty() {
                 req = req.bearer_auth(key);
             }
-        }
         match req.send().await {
             Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 405,
             Err(_) => false,
@@ -469,6 +471,7 @@ impl RemoteAsrClient {
         samples: &[f32],
         config: &SttConfig,
     ) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
+        crate::netpolicy::ensure_local_endpoint(&config.api_url)?;
         let start_time = Instant::now();
         let wav_bytes = samples_to_wav_bytes(samples, 16000);
 
@@ -486,11 +489,10 @@ impl RemoteAsrClient {
 
         let mut req = self.client.post(&config.api_url).multipart(form);
 
-        if let Some(ref key) = config.api_key {
-            if !key.is_empty() {
+        if let Some(ref key) = config.api_key
+            && !key.is_empty() {
                 req = req.bearer_auth(key);
             }
-        }
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
@@ -519,8 +521,8 @@ pub fn extract_speaker_if_present(text: &str) -> (Option<String>, String) {
     let trimmed = text.trim();
 
     // Check bracketed format: [Speaker 1] or [Locuteur A]
-    if trimmed.starts_with('[') {
-        if let Some(close_idx) = trimmed.find(']') {
+    if trimmed.starts_with('[')
+        && let Some(close_idx) = trimmed.find(']') {
             let potential_speaker = &trimmed[1..close_idx];
             let lower = potential_speaker.to_lowercase();
             if lower.contains("speaker") || lower.contains("locuteur") || lower.contains("person") {
@@ -531,18 +533,16 @@ pub fn extract_speaker_if_present(text: &str) -> (Option<String>, String) {
                 return (Some(potential_speaker.to_string()), rest.to_string());
             }
         }
-    }
 
     // Check prefix format: "Speaker 1:" or "Locuteur 2:"
     for prefix in &["Speaker ", "speaker ", "Locuteur ", "locuteur "] {
-        if let Some(after_prefix) = trimmed.strip_prefix(prefix) {
-            if let Some(colon_idx) = after_prefix.find(':') {
+        if let Some(after_prefix) = trimmed.strip_prefix(prefix)
+            && let Some(colon_idx) = after_prefix.find(':') {
                 let speaker_id = &after_prefix[..colon_idx].trim();
                 let full_speaker = format!("{}{}", prefix.trim(), speaker_id);
                 let rest = after_prefix[colon_idx + 1..].trim();
                 return (Some(full_speaker), rest.to_string());
             }
-        }
     }
 
     (None, trimmed.to_string())
@@ -550,18 +550,37 @@ pub fn extract_speaker_if_present(text: &str) -> (Option<String>, String) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_check_models() {
-        use whisper_rs::{WhisperContext, WhisperContextParameters};
-        for entry in std::fs::read_dir("models").unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().map_or(false, |e| e == "bin") {
-                let mut params = WhisperContextParameters::default();
-                params.use_gpu(false);
-                if let Ok(ctx) = WhisperContext::new_with_params(path.to_str().unwrap(), params) {
-                    println!("Model: {:?}, is_multilingual: {}", path.file_name().unwrap(), ctx.is_multilingual());
-                }
-            }
-        }
+    fn speaker_tags_are_extracted() {
+        assert_eq!(
+            extract_speaker_if_present("[Speaker 1]: bonjour"),
+            (Some("Speaker 1".to_string()), "bonjour".to_string())
+        );
+        assert_eq!(
+            extract_speaker_if_present("Locuteur 2: salut"),
+            (Some("Locuteur2".to_string()), "salut".to_string())
+        );
+        assert_eq!(extract_speaker_if_present("  texte simple "), (None, "texte simple".to_string()));
+    }
+
+    #[test]
+    fn wav_header_is_valid() {
+        let wav = samples_to_wav_bytes(&[0.0, 0.5, -0.5], 16_000);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(wav.len(), 44 + 6);
+    }
+
+    #[tokio::test]
+    async fn remote_asr_refuses_internet_endpoints() {
+        let client = RemoteAsrClient::new();
+        let cfg = SttConfig {
+            api_url: "https://api.openai.com/v1/audio/transcriptions".into(),
+            ..SttConfig::default()
+        };
+        assert!(client.transcribe(&[0.0; 160], &cfg).await.is_err());
+        assert!(!client.health_check(&cfg.api_url, None).await);
     }
 }

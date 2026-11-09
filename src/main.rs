@@ -4,9 +4,12 @@
 )]
 
 mod audio;
-pub mod codec;
 mod config;
+mod controller;
 mod gui;
+mod ml;
+mod netpolicy;
+mod pipeline;
 mod server;
 mod stt;
 mod translate;
@@ -20,10 +23,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use stt::{ensure_model_exists, resolve_model_download_url, RemoteAsrClient, WhisperEngine};
+use stt::models::{find_model_by_path, get_available_models, is_model_installed, ENGINE_WHISPER};
+use stt::WhisperEngine;
 use tokio::sync::{broadcast, mpsc, watch};
 use translate::TranslationService;
-use vad::SpeechSegmenter;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "VoiceBridge — Speech To Text To Translate in Rust")]
@@ -67,6 +70,46 @@ struct Args {
     /// Run in headless mode without native desktop GUI (web & OBS overlay only)
     #[arg(long, default_value_t = false)]
     headless: bool,
+
+    /// Use a WAV file (played at real-time speed, then silence) instead of the microphone.
+    /// Useful to test engines or subtitle a recording.
+    #[arg(long, value_name = "FILE")]
+    input_wav: Option<PathBuf>,
+}
+
+/// Feed a WAV file into the pipeline at real-time speed, followed by silence.
+fn spawn_wav_input(
+    path: &std::path::Path,
+    audio_tx: mpsc::UnboundedSender<Vec<f32>>,
+    rms_tx: watch::Sender<f32>,
+) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    let (pcm, rate) = audio::wav::read_wav_mono(path)?;
+    tracing::info!(
+        "Entrée audio : fichier {} ({:.1} s à {} Hz) au lieu du micro.",
+        path.display(),
+        pcm.len() as f32 / rate as f32,
+        rate
+    );
+    let chunk = (rate as usize / 50).max(1); // 20 ms
+    std::thread::Builder::new().name("voicebridge-wav-input".into()).spawn(move || {
+        let start = std::time::Instant::now();
+        let mut sent = 0usize;
+        let silence = vec![0.0f32; chunk];
+        let mut it = pcm.chunks(chunk);
+        loop {
+            let block = it.next().unwrap_or(&silence);
+            let _ = rms_tx.send(audio::calculate_rms(block));
+            if audio_tx.send(block.to_vec()).is_err() {
+                break;
+            }
+            sent += block.len();
+            let due = std::time::Duration::from_secs_f64(sent as f64 / rate as f64);
+            if let Some(wait) = due.checked_sub(start.elapsed()) {
+                std::thread::sleep(wait);
+            }
+        }
+    })?;
+    Ok(rate)
 }
 
 #[cfg(windows)]
@@ -95,15 +138,14 @@ fn ensure_writable_app_workdir() {
             if cwd.join("Cargo.toml").is_file() {
                 return true;
             }
-            if cwd.join("config.json").is_file() {
-                if let Ok(file) = std::fs::OpenOptions::new()
+            if cwd.join("config.json").is_file()
+                && let Ok(file) = std::fs::OpenOptions::new()
                     .write(true)
                     .open(cwd.join("config.json"))
                 {
                     drop(file);
                     return true;
                 }
-            }
             false
         })
         .unwrap_or(false);
@@ -143,10 +185,35 @@ fn ensure_writable_app_workdir() {
         }
     };
 
-    if let Some(app_dir) = user_data_dir {
-        if std::fs::create_dir_all(app_dir.join("models")).is_ok() {
+    if let Some(app_dir) = user_data_dir
+        && std::fs::create_dir_all(app_dir.join("models")).is_ok() {
             let _ = std::env::set_current_dir(&app_dir);
         }
+}
+
+/// Whisper model loaded at startup. When a streaming engine (Kyutai / Hibiki) is
+/// selected, `stt.model_path` is that model's directory, so Whisper (used as fallback)
+/// loads an installed Whisper model instead.
+fn startup_whisper_path(config: &AppConfig) -> (String, String) {
+    if config.stt.engine_type == ENGINE_WHISPER || config.stt.model_path.ends_with(".bin") {
+        return (config.stt.model_path.clone(), config.stt.model_url.clone());
+    }
+    let catalog = get_available_models();
+    let whisper_models: Vec<_> = catalog.iter().filter(|m| m.default_engine == ENGINE_WHISPER).collect();
+    let chosen = whisper_models
+        .iter()
+        .find(|m| is_model_installed(m))
+        .or_else(|| whisper_models.iter().find(|m| m.id == "whisper_turbo_q5"))
+        .or_else(|| whisper_models.first());
+    match chosen {
+        Some(m) => (m.default_model_name.clone(), m.download_url.clone().unwrap_or_default()),
+        None => (config.stt.model_path.clone(), config.stt.model_url.clone()),
+    }
+}
+
+fn stop_capture(capture: &Option<AudioCapture>) {
+    if let Some(c) = capture {
+        c.set_active(false);
     }
 }
 
@@ -158,7 +225,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     ensure_writable_app_workdir();
 
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -174,6 +240,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         args.config.clone()
     };
+    let config_path = std::path::absolute(&config_path).unwrap_or(config_path);
+    config::set_config_path(config_path.clone());
     let mut config = AppConfig::load_or_default(&config_path);
 
     if let Some(port) = args.port {
@@ -183,17 +251,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.translation.target_lang = target;
     }
     if let Some(model) = args.model {
+        config.stt.engine_type = ENGINE_WHISPER.to_string();
         config.stt.model_path = model;
+        if let Some(meta) = find_model_by_path(&config.stt.model_path) {
+            config.stt.model_id = meta.id;
+            config.stt.model_name = meta.name;
+        }
     }
     if let Some(backend) = args.gpu_backend {
         let lower = backend.to_ascii_lowercase();
-        if lower == "cpu" {
-            config.stt.use_gpu = false;
-            config.stt.gpu_backend = "cpu".to_string();
-        } else {
-            config.stt.use_gpu = true;
-            config.stt.gpu_backend = lower;
-        }
+        config.stt.use_gpu = lower != "cpu";
+        config.stt.gpu_backend = lower;
     }
     if let Some(dev_idx) = args.gpu_device {
         config.stt.gpu_device = dev_idx.max(0);
@@ -208,10 +276,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(threads) = args.threads {
         config.stt.n_threads = threads.max(1);
     }
+    config.sanitize();
 
     println!("\n╔═══════════════════════════════════════════════════════════════╗");
-    println!("║       VoiceBridge — Speech To Text To Translate (Rust)    ║");
+    println!("║   VoiceBridge — Speech To Text To Translate (100 % local)     ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
+    tracing::info!("Configuration : {}", config_path.display());
 
     let detected_gpus = stt::list_gpu_devices();
     if detected_gpus.is_empty() {
@@ -232,39 +302,28 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // 1. Build Multi-threaded Tokio Runtime
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
-    // 2. Initialize Models, Audio Capture & Server inside Tokio Runtime
-    let (app_state, audio_capture, bound_port) = rt.block_on(async {
-        let resolved_url = resolve_model_download_url(
-            &config.stt.model_id,
-            &config.stt.model_path,
-            &config.stt.model_url,
-        );
-        if config.stt.model_url != resolved_url {
-            config.stt.model_url = resolved_url.clone();
-        }
-        ensure_model_exists(&config.stt.model_path, &resolved_url).await?;
-
-        let whisper_engine = Arc::new(tokio::sync::Mutex::new(
-            WhisperEngine::new_with_gpu_options(
-                &config.stt.model_path,
-                &config.stt.language,
-                config.stt.n_threads,
-                config.stt.use_gpu,
-                &config.stt.gpu_backend,
-                config.stt.gpu_device,
-                config.stt.flash_attn,
-            )?,
-        ));
-        stt::register_atexit_whisper_cleanup(&whisper_engine);
-        let remote_asr_client = Arc::new(RemoteAsrClient::new());
+    let (app_state, audio_capture, bound_addr) = rt.block_on(async {
         let download_status = Arc::new(tokio::sync::RwLock::new(stt::DownloadStatus::default()));
+        let (whisper_path, whisper_url) = startup_whisper_path(&config);
+        stt::downloader::ensure_model_exists(&whisper_path, &whisper_url, &download_status).await?;
+        if config.stt.engine_type == ENGINE_WHISPER {
+            config.stt.model_path = whisper_path.clone();
+        }
 
-        let translation_service = Arc::new(tokio::sync::RwLock::new(TranslationService::new(
+        let whisper_engine = Arc::new(tokio::sync::Mutex::new(WhisperEngine::new_with_gpu_options(
+            &whisper_path,
+            &config.stt.language,
+            config.stt.n_threads,
+            config.stt.use_gpu,
+            &config.stt.gpu_backend,
+            config.stt.gpu_device,
+            config.stt.flash_attn,
+        )?));
+        stt::register_atexit_whisper_cleanup(&whisper_engine);
+
+        let mut translation = TranslationService::new(
             config.translation.enabled,
             config.translation.source_lang.clone(),
             config.translation.target_lang.clone(),
@@ -272,47 +331,53 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.translation.local_api_url.clone(),
             config.translation.model_name.clone(),
             config.translation.api_key.clone(),
-        )));
+            PathBuf::from(&config.translation.madlad_model_dir),
+        );
+        translation.apply_config(&config.translation, config.stt.use_gpu, config.stt.gpu_device);
+        let translation_service = Arc::new(tokio::sync::RwLock::new(translation));
 
-        let (event_tx, _) = broadcast::channel::<PipelineEvent>(128);
+        let (event_tx, _) = broadcast::channel::<PipelineEvent>(256);
         let (rms_tx, rms_rx) = watch::channel(0.0f32);
-        let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<f32>>();
-
+        let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<f32>>();
         let is_recording = Arc::new(AtomicBool::new(true));
 
-        let devices = AudioDeviceManager::list_input_devices();
-        let default_device_name = devices
-            .iter()
+        let default_device_name = AudioDeviceManager::list_input_devices()
+            .into_iter()
             .find(|d| d.is_default)
-            .map(|d| d.name.clone())
+            .map(|d| d.name)
             .unwrap_or_else(|| "Default Audio Device".into());
 
-        let audio_capture = AudioCapture::start(
-            config.audio.device_name.as_deref(),
-            config.audio.sample_rate,
-            audio_tx,
-            Some(rms_tx),
-        )?;
+        let (audio_capture, source_rate) = match &args.input_wav {
+            Some(path) => (None, spawn_wav_input(path, audio_tx, rms_tx)?),
+            None => {
+                let capture = AudioCapture::start(config.audio.device_name.as_deref(), audio_tx, Some(rms_tx))?;
+                let rate = capture.source_rate();
+                (Some(capture), rate)
+            }
+        };
 
-        // Pre-bind web server port (with automatic fallback if desired port is occupied)
+        // Bind the web server (fallback to the next ports if the desired one is busy).
         let host_ip: std::net::IpAddr = config
             .server
             .host
             .parse()
-            .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        if !host_ip.is_loopback() {
+            tracing::warn!(
+                "Le serveur web écoute sur {} : l'interface est accessible depuis votre réseau local.",
+                host_ip
+            );
+        }
         let desired_port = config.server.port;
         let mut bound_listener = None;
         for offset in 0..=10u16 {
-            let candidate_port = match desired_port.checked_add(offset) {
-                Some(p) => p,
-                None => break,
-            };
+            let Some(candidate_port) = desired_port.checked_add(offset) else { break };
             let candidate_addr = SocketAddr::new(host_ip, candidate_port);
             match tokio::net::TcpListener::bind(&candidate_addr).await {
                 Ok(listener) => {
                     if offset > 0 {
                         tracing::warn!(
-                            "Port {} was already in use; bound web server to fallback port {}.",
+                            "Port {} occupé : serveur web démarré sur le port {}.",
                             desired_port,
                             candidate_port
                         );
@@ -321,264 +386,68 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     bound_listener = Some((listener, candidate_addr));
                     break;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && offset < 10 => {
-                    if offset == 0 {
-                        tracing::warn!(
-                            "Web server port {} is already in use ({}). Searching for next available port...",
-                            candidate_addr,
-                            e
-                        );
-                    }
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
                 Err(e) => {
-                    tracing::error!("Failed to bind web server port {}: {}", candidate_addr, e);
+                    tracing::error!("Impossible d'ouvrir le port {} : {}", candidate_addr, e);
                     break;
                 }
             }
         }
 
         let app_state = AppState::new(
-            event_tx.clone(),
+            event_tx,
             rms_rx,
-            is_recording.clone(),
+            is_recording,
             default_device_name,
             config.clone(),
-            whisper_engine.clone(),
-            download_status.clone(),
-            translation_service.clone(),
+            whisper_engine,
+            download_status,
+            translation_service,
         );
 
-        // Background Audio Processing Pipeline
-        let pipeline_state = app_state.clone();
-        let whisper_clone = whisper_engine.clone();
-        let remote_asr_clone = remote_asr_client.clone();
-        let translator_clone = translation_service.clone();
-        let audio_cfg = config.audio.clone();
-        let is_rec_clone = is_recording.clone();
-
-        tokio::spawn(async move {
-            let mut segmenter = SpeechSegmenter::new(
-                audio_cfg.sample_rate,
-                audio_cfg.vad_threshold,
-                audio_cfg.vad_silence_duration_ms,
-                audio_cfg.vad_min_speech_ms,
-                audio_cfg.vad_max_speech_ms,
-            );
-
-            tracing::info!("Audio processing pipeline running (in-memory zero-disk streaming).");
-
-            let mut last_config_check = std::time::Instant::now();
-            while let Some(chunk) = audio_rx.recv().await {
-                if pipeline_state
-                    .is_shutting_down
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    break;
-                }
-                if !is_rec_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    continue;
-                }
-
-                if last_config_check.elapsed().as_millis() > 500 {
-                    let (th, sil, min_sp, max_sp) = {
-                        let cfg = pipeline_state.config.read().await;
-                        (
-                            cfg.audio.vad_threshold,
-                            cfg.audio.vad_silence_duration_ms,
-                            cfg.audio.vad_min_speech_ms,
-                            cfg.audio.vad_max_speech_ms,
-                        )
-                    };
-                    segmenter.update_params(th, sil, min_sp, max_sp);
-                    last_config_check = std::time::Instant::now();
-                }
-
-                if let Some(speech_segment) = segmenter.process_chunk(&chunk) {
-                    let whisper = whisper_clone.clone();
-                    let remote_asr = remote_asr_clone.clone();
-                    let translator = translator_clone.clone();
-                    let state = pipeline_state.clone();
-
-                    tokio::spawn(async move {
-                        if state
-                            .is_shutting_down
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            return;
-                        }
-                        let cfg = state.config.read().await.clone();
-                        let target_lang = cfg.translation.target_lang.clone();
-                        let effective_source_lang = if !cfg.stt.language.is_empty() {
-                            cfg.stt.language.clone()
-                        } else if !cfg.translation.source_lang.is_empty() {
-                            cfg.translation.source_lang.clone()
-                        } else {
-                            "auto".to_string()
-                        };
-
-                        let stt_result = if cfg.stt.engine_type == "kyutai_streaming" {
-                            let mut kyutai = state.kyutai_engine.lock().await;
-                            let converter_24k = crate::audio::resampler::AudioConverter::new(16000, 24000, 1);
-                            let samples_24k = converter_24k.process(&speech_segment);
-                            let mut all_words = Vec::new();
-                            for chunk in samples_24k.chunks(1920) {
-                                if chunk.len() == 1920 {
-                                    if let Ok(words) = kyutai.step_frame(chunk) {
-                                        for w in words {
-                                            let mut hibiki = state.hibiki_translator.lock().await;
-                                            let trans_chunk = hibiki
-                                                .feed_source_word(&w.word, false)
-                                                .map(|u| u.translated_chunk)
-                                                .unwrap_or_else(|| w.word.clone());
-
-                                            let stream_event = PipelineEvent::new_streaming(
-                                                w.word.clone(),
-                                                trans_chunk,
-                                                None,
-                                                effective_source_lang.clone(),
-                                                target_lang.clone(),
-                                                (w.end_ms.saturating_sub(w.start_ms)) as u128,
-                                                "Kyutai STT 1B Streaming".to_string(),
-                                            );
-                                            let _ = state.event_tx.send(stream_event);
-                                            all_words.push(w.word);
-                                        }
-                                    }
-                                }
-                            }
-                            let full_text = all_words.join(" ");
-                            let duration = (speech_segment.len() as u128 * 1000) / 16000;
-                            Ok(crate::stt::engine::TranscriptionResult {
-                                text: full_text,
-                                speaker: None,
-                                language: effective_source_lang.clone(),
-                                duration_ms: duration,
-                                model_name: "Kyutai STT 1B (Streaming)".to_string(),
-                            })
-                        } else if cfg.stt.engine_type == "whisper_local" {
-                            let mut engine = whisper.lock().await;
-                            engine.transcribe(&speech_segment, Some(&effective_source_lang), false)
-                        } else {
-                            match remote_asr.transcribe(&speech_segment, &cfg.stt).await {
-                                Ok(res) => Ok(res),
-                                Err(err) => {
-                                    if state
-                                        .is_shutting_down
-                                        .load(std::sync::atomic::Ordering::Relaxed)
-                                    {
-                                        return;
-                                    }
-                                    tracing::warn!(
-                                        "Serveur distant ASR injoignable ({}), bascule automatique sur Whisper local GPU/CPU.",
-                                        err
-                                    );
-                                    let mut engine = whisper.lock().await;
-                                    engine.transcribe(&speech_segment, Some(&effective_source_lang), false)
-                                }
-                            }
-                        };
-
-                        match stt_result {
-                            Ok(stt_res) => {
-                                let trimmed = stt_res.text.trim();
-                                if trimmed.is_empty()
-                                    || trimmed.eq_ignore_ascii_case("[blank_audio]")
-                                    || trimmed.eq_ignore_ascii_case("[silence]")
-                                    || trimmed.eq_ignore_ascii_case("(silence)")
-                                {
-                                    return;
-                                }
-
-                                let speaker_str = stt_res
-                                    .speaker
-                                    .as_deref()
-                                    .map(|s| format!(" [{}]", s))
-                                    .unwrap_or_default();
-
-                                tracing::info!(
-                                    "🗣️  [STT {} ({}ms){}]: {}",
-                                    stt_res.model_name,
-                                    stt_res.duration_ms,
-                                    speaker_str,
-                                    stt_res.text
-                                );
-
-                                let trans_res = {
-                                    let trans = translator.read().await;
-                                    let effective_source = if effective_source_lang == "auto" || effective_source_lang.is_empty() {
-                                        &stt_res.language
-                                    } else {
-                                        &effective_source_lang
-                                    };
-                                    trans.translate(&stt_res.text, effective_source, &target_lang).await
-                                };
-
-                                tracing::info!(
-                                    "🌐 [MT {}ms -> {}]: {}",
-                                    trans_res.duration_ms,
-                                    target_lang,
-                                    trans_res.translated_text
-                                );
-
-                                let event = PipelineEvent::new(
-                                    stt_res.text,
-                                    trans_res.translated_text,
-                                    stt_res.speaker,
-                                    stt_res.language,
-                                    target_lang,
-                                    stt_res.duration_ms,
-                                    trans_res.duration_ms,
-                                    stt_res.model_name,
-                                );
-
-                                state.add_event(event).await;
-                            }
-                            Err(err) => {
-                                tracing::error!("Speech recognition error: {}", err);
-                            }
-                        }
-                    });
-                }
-            }
-        });
-
-        // 3. Start Background Web Server for OBS Studio Browser Source
-        let actual_port = config.server.port;
-        if let Some((listener, actual_addr)) = bound_listener {
-            let router = create_router(app_state.clone());
-            tracing::info!("VoiceBridge Web Interface available at: http://{}", actual_addr);
-            tracing::info!("OBS Studio Subtitle Overlay available at: http://{}/obs", actual_addr);
-
-            tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, router).await {
-                    tracing::error!("Web server error: {}", e);
-                }
-            });
+        pipeline::spawn(app_state.clone(), audio_rx, source_rate);
+        {
+            let state = app_state.clone();
+            tokio::spawn(async move { state.restore_engine_on_startup().await });
         }
 
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((app_state, audio_capture, actual_port))
+        let bound_addr = bound_listener.map(|(listener, addr)| {
+            let router = create_router(app_state.clone());
+            tracing::info!("Interface web VoiceBridge : http://{}", addr);
+            tracing::info!("Sous-titres OBS Studio : http://{}/obs", addr);
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!("Erreur du serveur web : {}", e);
+                }
+            });
+            addr
+        });
+
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((app_state, audio_capture, bound_addr))
     })?;
 
-    // 4. Run GUI or Headless Event Loop
     if args.headless {
-        println!("🚀 Mode headless actif : Interface Web et OBS opérationnelles sur http://127.0.0.1:{}", bound_port);
+        let Some(addr) = bound_addr else {
+            stop_capture(&audio_capture);
+            app_state.shutdown_sync();
+            return Err("aucun port disponible pour le serveur web (mode headless sans interface)".into());
+        };
+        println!("🚀 Mode headless : interface web et OBS sur http://{addr}");
         println!("Appuyez sur Ctrl+C pour quitter.");
         rt.block_on(async {
             let _ = tokio::signal::ctrl_c().await;
             println!("\nArrêt du pipeline...");
         });
-        audio_capture.set_active(false);
+        stop_capture(&audio_capture);
         app_state.shutdown_sync();
     } else {
-        println!("✨ Lancement de l'interface graphique native VoiceBridge (GPUI 120 FPS)...");
-        let handle = rt.handle().clone();
-        let app_state_gui = app_state.clone();
-
-        let res = gui::run_gui(app_state_gui, handle);
-
-        audio_capture.set_active(false);
+        if bound_addr.is_none() {
+            tracing::error!("Serveur web indisponible (aucun port libre) : l'overlay OBS ne fonctionnera pas.");
+        }
+        println!("✨ Lancement de l'interface graphique native VoiceBridge...");
+        let res = gui::run_gui(app_state.clone(), rt.handle().clone());
+        stop_capture(&audio_capture);
         app_state.shutdown_sync();
-
         if let Err(e) = res {
             tracing::error!("Erreur interface graphique GPUI: {:?}", e);
         }

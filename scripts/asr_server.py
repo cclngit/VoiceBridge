@@ -19,25 +19,21 @@ if __name__ == "__main__":
     port = "8000"
     model = "Systran/faster-whisper-base"
 
-    if len(sys.argv) == 1:
-        pass
-    elif len(sys.argv) == 2 and not sys.argv[1].startswith("-"):
-        raw_model = sys.argv[1]
-        # If user passed a model that is not a direct CTranslate2 / faster-whisper repo, map gracefully
-        if os.path.exists(raw_model) or "faster-whisper" in raw_model.lower():
-            model = raw_model
-        elif "turbo" in raw_model.lower():
-            model = "deepdml/faster-whisper-large-v3-turbo"
-        elif "large" in raw_model.lower() or "24b" in raw_model.lower():
-            model = "Systran/faster-whisper-large-v3"
-        elif "tiny" in raw_model.lower() or "moonshine" in raw_model.lower():
-            model = "Systran/faster-whisper-tiny"
-        elif "small" in raw_model.lower() or "mini" in raw_model.lower():
-            model = "Systran/faster-whisper-small"
+    # Models this wrapper can actually serve (CTranslate2 / faster-whisper checkpoints).
+    # Other ASR models (Qwen3-ASR, Voxtral, Canary, VibeVoice...) need their own server
+    # such as vLLM: they are never silently replaced by a different model.
+    if len(sys.argv) == 2 and not sys.argv[1].startswith("-"):
+        requested = sys.argv[1]
+        if os.path.exists(requested) or "faster-whisper" in requested.lower():
+            model = requested
         else:
-            model = "Systran/faster-whisper-base"
-        print(f"⚡ [VoiceBridge ASR Server] Modèle sélectionné: '{raw_model}' -> Exécution via '{model}'")
-    
+            sys.stderr.write(
+                f"[VoiceBridge ASR Server] '{requested}' n'est pas un modèle faster-whisper : "
+                "lancez un serveur dédié (vLLM / Speaches) pour ce modèle.\n"
+            )
+            sys.exit(2)
+        print(f"⚡ [VoiceBridge ASR Server] Modèle : '{model}' sur http://{host}:{port}")
+
     # Check if host or port was provided in sys.argv
     has_host = "--host" in sys.argv
     has_port = "--port" in sys.argv

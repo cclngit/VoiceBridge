@@ -1,4 +1,4 @@
-use super::resampler::{calculate_rms, AudioConverter};
+use super::resampler::{calculate_rms, downmix_to_mono};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,15 +30,17 @@ impl AudioDeviceManager {
     }
 }
 
+/// Live microphone capture. The CPAL callback only down-mixes to mono and forwards the
+/// samples at the device's native rate; resampling happens off the real-time thread.
 pub struct AudioCapture {
     _stream: cpal::Stream,
     is_running: Arc<AtomicBool>,
+    source_rate: u32,
 }
 
 impl AudioCapture {
     pub fn start(
         device_name: Option<&str>,
-        target_sample_rate: u32,
         audio_tx: UnboundedSender<Vec<f32>>,
         rms_tx: Option<tokio::sync::watch::Sender<f32>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -52,12 +54,12 @@ impl AudioCapture {
                         name
                     );
                     host.default_input_device()
-                        .ok_or_else(|| "No default audio input device found")?
+                        .ok_or("No default audio input device found")?
                 }
             },
             None => host
                 .default_input_device()
-                .ok_or_else(|| "No default audio input device found")?,
+                .ok_or("No default audio input device found")?,
         };
 
         let device_name = device.to_string();
@@ -76,11 +78,6 @@ impl AudioCapture {
             sample_format
         );
 
-        let converter = Arc::new(AudioConverter::new(
-            source_rate,
-            target_sample_rate,
-            channels,
-        ));
         let is_running = Arc::new(AtomicBool::new(true));
         let running_clone = is_running.clone();
 
@@ -90,7 +87,6 @@ impl AudioCapture {
 
         let stream = match sample_format {
             SampleFormat::F32 => {
-                let conv = converter.clone();
                 let tx = audio_tx.clone();
                 let rtx = rms_tx.clone();
                 let is_run = running_clone.clone();
@@ -101,19 +97,18 @@ impl AudioCapture {
                         if !is_run.load(Ordering::Relaxed) {
                             return;
                         }
-                        let resampled = conv.process(data);
+                        let mono = downmix_to_mono(data, channels);
                         if let Some(ref rtx) = rtx {
-                            let rms = calculate_rms(&resampled);
+                            let rms = calculate_rms(&mono);
                             let _ = rtx.send(rms);
                         }
-                        let _ = tx.send(resampled);
+                        let _ = tx.send(mono);
                     },
                     err_fn,
                     None,
                 )?
             }
             SampleFormat::I16 => {
-                let conv = converter.clone();
                 let tx = audio_tx.clone();
                 let rtx = rms_tx.clone();
                 let is_run = running_clone.clone();
@@ -126,19 +121,18 @@ impl AudioCapture {
                         }
                         let float_data: Vec<f32> =
                             data.iter().map(|&s| s as f32 / 32768.0).collect();
-                        let resampled = conv.process(&float_data);
+                        let mono = downmix_to_mono(&float_data, channels);
                         if let Some(ref rtx) = rtx {
-                            let rms = calculate_rms(&resampled);
+                            let rms = calculate_rms(&mono);
                             let _ = rtx.send(rms);
                         }
-                        let _ = tx.send(resampled);
+                        let _ = tx.send(mono);
                     },
                     err_fn,
                     None,
                 )?
             }
             SampleFormat::U16 => {
-                let conv = converter.clone();
                 let tx = audio_tx.clone();
                 let rtx = rms_tx.clone();
                 let is_run = running_clone.clone();
@@ -153,12 +147,12 @@ impl AudioCapture {
                             .iter()
                             .map(|&s| (s as f32 - 32768.0) / 32768.0)
                             .collect();
-                        let resampled = conv.process(&float_data);
+                        let mono = downmix_to_mono(&float_data, channels);
                         if let Some(ref rtx) = rtx {
-                            let rms = calculate_rms(&resampled);
+                            let rms = calculate_rms(&mono);
                             let _ = rtx.send(rms);
                         }
-                        let _ = tx.send(resampled);
+                        let _ = tx.send(mono);
                     },
                     err_fn,
                     None,
@@ -175,15 +169,17 @@ impl AudioCapture {
         Ok(Self {
             _stream: stream,
             is_running,
+            source_rate,
         })
+    }
+
+    /// Native sample rate (Hz) of the mono samples sent on the audio channel.
+    pub fn source_rate(&self) -> u32 {
+        self.source_rate
     }
 
     pub fn set_active(&self, active: bool) {
         self.is_running.store(active, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
-    pub fn is_active(&self) -> bool {
-        self.is_running.load(Ordering::Relaxed)
-    }
 }
