@@ -292,13 +292,18 @@ jobs:
             $defFile = "$env:RUNNER_TEMP\Vulkan-Loader-1.4.309\loader\vulkan-1.def"
             & "$msvcBin\lib.exe" "/def:$defFile" "/out:$vkSdk\Lib\vulkan-1.lib" "/machine:x64" | Out-Null
 
-            # Install official Vulkan Runtime (vulkan-1.dll) silently so test & smoke binaries run cleanly on CI runner
+            # Install official Vulkan Runtime (vulkan-1.dll) silently so test & smoke binaries run cleanly on CI runner.
+            # Pinned version + SHA-256: LunarG's "latest" URL started returning a 404 text page.
             $vkRtExe = Join-Path $env:RUNNER_TEMP "vulkan-runtime.exe"
-            curl.exe -sSL "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-runtime.exe" -o $vkRtExe
-            if (Test-Path $vkRtExe) {
-              Start-Process -FilePath $vkRtExe -ArgumentList "/S" -Wait
-              Write-Host "Installed Vulkan Runtime (vulkan-1.dll)"
+            curl.exe -fsSL "https://sdk.lunarg.com/sdk/download/1.4.309.0/windows/VulkanRT-1.4.309.0-Installer.exe" -o $vkRtExe
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download the Vulkan Runtime installer" }
+            $vkRtHash = (Get-FileHash -Algorithm SHA256 $vkRtExe).Hash.ToLower()
+            if ($vkRtHash -ne "9cbb7461f49b5fe489fc1c59b9cff49924671fa31fa06e2b119c29ecd141c622") {
+              throw "Vulkan Runtime installer checksum mismatch: $vkRtHash"
             }
+            $vkRtProc = Start-Process -FilePath $vkRtExe -ArgumentList "/S" -Wait -PassThru
+            if ($vkRtProc.ExitCode -ne 0) { throw "Vulkan Runtime installer exited with code $($vkRtProc.ExitCode)" }
+            Write-Host "Installed Vulkan Runtime 1.4.309.0 (vulkan-1.dll)"
 
             echo "VULKAN_SDK=$vkSdk" | Out-File -FilePath $env:GITHUB_ENV -Append
             echo "$vkSdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
