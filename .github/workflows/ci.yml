@@ -489,7 +489,9 @@ jobs:
       - name: Cache Cargo registry and target build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.cargo_features }}
+          # Includes the pinned shaderc build: ggml-vulkan shaders are compiled inside the cached
+          # whisper-rs-sys output, so a glslc change must not reuse it.
+          key: ${{ matrix.target }}-${{ matrix.cargo_features }}-shaderc53
           cache-on-failure: true
 
       - name: Build release binary on Unix (single target)
