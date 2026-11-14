@@ -312,15 +312,21 @@ jobs:
             tar.exe -xzf $vkHeadersTar -C $env:RUNNER_TEMP
             Copy-Item -Path "$env:RUNNER_TEMP\Vulkan-Headers-1.4.309\include\*" -Destination "$vkSdk\Include" -Recurse -Force
 
-            $shadercHtml = curl.exe -sSL "https://storage.googleapis.com/shaderc/badges/build_link_windows_vs2022_amd64_release.html"
-            if ($shadercHtml -match '(https://storage\.googleapis\.com/shaderc/[^\s"'']+?)/install\.tgz') {
-              $shadercZipUrl = "$($Matches[1])/install.zip"
-              $shadercZip = Join-Path $env:RUNNER_TEMP "shaderc.zip"
-              $shadercDir = Join-Path $env:RUNNER_TEMP "shaderc"
-              curl.exe -sSL $shadercZipUrl -o $shadercZip
-              Expand-Archive -Path $shadercZip -DestinationPath $shadercDir -Force
-              Copy-Item "$shadercDir\install\bin\glslc.exe" "$vkSdk\Bin\glslc.exe" -Force
+            # glslc pinned to shaderc build 53 (2026-10-28) + SHA-256. The "latest" badge link moved to
+            # build 54 on 2026-11-13, whose glslc fails on some ggml-vulkan shaders; vulkan-shaders-gen
+            # only logs that, so the link then fails with unresolved set_rows_*_rte symbols.
+            $shadercZipUrl = "https://storage.googleapis.com/shaderc/artifacts/prod/graphics_shader_compiler/shaderc/windows-vs2022-amd64-release/continuous/53/20261028-151553/install.zip"
+            $shadercZip = Join-Path $env:RUNNER_TEMP "shaderc.zip"
+            $shadercDir = Join-Path $env:RUNNER_TEMP "shaderc"
+            curl.exe -fsSL $shadercZipUrl -o $shadercZip
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download shaderc (glslc)" }
+            $shadercHash = (Get-FileHash -Algorithm SHA256 $shadercZip).Hash.ToLower()
+            if ($shadercHash -ne "2d5358873b2726a15ed9ab6fe45143a76913f4d62a8434a6f6a1a471bdfe1270") {
+              throw "shaderc checksum mismatch: $shadercHash"
             }
+            Expand-Archive -Path $shadercZip -DestinationPath $shadercDir -Force
+            Copy-Item "$shadercDir\install\bin\glslc.exe" "$vkSdk\Bin\glslc.exe" -Force
+            & "$vkSdk\Bin\glslc.exe" --version
 
             # Generate vulkan-1.lib import library for x64
             $msvcBin = $null
