@@ -6,7 +6,7 @@ pub mod models;
 pub use downloader::DownloadStatus;
 pub use engine::{register_atexit_whisper_cleanup, RemoteAsrClient, WhisperEngine};
 pub use models::{
-    active_hardware_summary, active_whisper_backend_label, compiled_gpu_backends, find_model,
-    get_available_models, has_compiled_gpu_backend, is_model_installed, list_gpu_devices,
+    active_hardware_summary, active_whisper_backend_label, best_gpu_device, compiled_gpu_backends, find_model,
+    get_available_models, has_compiled_gpu_backend, is_model_installed, list_gpu_devices, recommended_cpu_threads,
     resolve_gpu_selection, GpuDeviceInfo, ModelMetadata,
 };

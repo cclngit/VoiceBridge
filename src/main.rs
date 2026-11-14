@@ -13,6 +13,7 @@ mod pipeline;
 mod server;
 mod stt;
 mod translate;
+mod updater;
 mod vad;
 
 use audio::{AudioCapture, AudioDeviceManager};
@@ -282,6 +283,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("║   VoiceBridge — Speech To Text To Translate (100 % local)     ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
     tracing::info!("Configuration : {}", config_path.display());
+
+    // Developer hint only: an explicitly requested backend ("cuda", "vulkan"…) that this
+    // binary was not built with. "auto" falls back to CPU silently, as end users expect.
+    if config.stt.use_gpu
+        && !matches!(config.stt.gpu_backend.as_str(), "auto" | "cpu" | "")
+        && !stt::compiled_gpu_backends().contains(&config.stt.gpu_backend.as_str())
+    {
+        tracing::warn!(
+            "config.json demande gpu_backend = \"{}\", absent de ce binaire (compilé avec : {:?}) : \
+             le meilleur backend disponible sera utilisé. Pour le développement : \
+             `.\\scripts\\build_windows_gpu.ps1 -Run`.",
+            config.stt.gpu_backend,
+            stt::compiled_gpu_backends()
+        );
+    }
 
     let detected_gpus = stt::list_gpu_devices();
     if detected_gpus.is_empty() {
