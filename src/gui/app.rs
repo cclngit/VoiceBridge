@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,6 +64,18 @@ pub enum GuiTab {
     Incrustation = 4,
 }
 
+/// State of the "new version" check shown in the title bar.
+enum UpdateUi {
+    Checking,
+    UpToDate,
+    Available(crate::updater::UpdateInfo),
+    Downloading(crate::updater::UpdateInfo),
+    /// macOS / Linux: the package was opened with the system installer.
+    Handed(crate::updater::UpdateInfo),
+    /// Details are logged; clicking retries.
+    Failed,
+}
+
 pub struct VoiceBridgeApp {
     focus_handle: FocusHandle,
     state: AppState,
@@ -125,6 +137,10 @@ pub struct VoiceBridgeApp {
     translation_engine: String,
     translation_llm_url: String,
     engine_message: String,
+
+    // Application update (GitHub Releases)
+    update_state: UpdateUi,
+    update_progress: Arc<AtomicU8>,
 }
 
 impl VoiceBridgeApp {
@@ -208,7 +224,10 @@ impl VoiceBridgeApp {
             translation_engine: initial_cfg.translation.engine.clone(),
             translation_llm_url: initial_cfg.translation.local_api_url.clone(),
             engine_message: String::new(),
+            update_state: UpdateUi::Checking,
+            update_progress: Arc::new(AtomicU8::new(0)),
         };
+        app.check_for_updates(cx);
 
         // Populate initial history if available
         let hist = app.state.history.blocking_read().clone();
@@ -328,6 +347,121 @@ impl VoiceBridgeApp {
         .detach();
 
         app
+    }
+
+    // Look for a newer release (startup and "Vérifier" click). Read-only request to GitHub.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.update_state = UpdateUi::Checking;
+        cx.notify();
+        let handle = self.tokio_handle.clone();
+        cx.spawn(async move |this, cx| {
+            let res = handle
+                .spawn(crate::updater::check_latest())
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                this.update_state = match res {
+                    Ok(Some(info)) => UpdateUi::Available(info),
+                    Ok(None) => UpdateUi::UpToDate,
+                    Err(e) => {
+                        tracing::warn!("Vérification des mises à jour : {}", e);
+                        UpdateUi::Failed
+                    }
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // Download + verify + launch the installer, then quit so it can replace the files (Windows).
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateUi::Available(info) = &self.update_state else { return };
+        let info = info.clone();
+        self.update_state = UpdateUi::Downloading(info.clone());
+        self.update_progress.store(0, Ordering::Relaxed);
+        cx.notify();
+
+        let handle = self.tokio_handle.clone();
+        let progress = self.update_progress.clone();
+        cx.spawn(async move |this, cx| {
+            let handed = info.clone();
+            let res = handle
+                .spawn(async move {
+                    let path = crate::updater::download(&info, progress).await?;
+                    crate::updater::launch_installer(&path)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                match res {
+                    Ok(()) if crate::updater::installs_silently() => {
+                        tracing::info!("Installation de VoiceBridge {} : fermeture de l'application.", handed.version);
+                        cx.quit();
+                    }
+                    Ok(()) => this.update_state = UpdateUi::Handed(handed),
+                    Err(e) => {
+                        tracing::warn!("Mise à jour : {}", e);
+                        this.update_state = UpdateUi::Failed;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_update_chip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = crate::updater::CURRENT_VERSION;
+        let release_page = match &self.update_state {
+            UpdateUi::Handed(i) => Some(i.page_url.clone()),
+            _ => None,
+        };
+        let (label, dot, clickable, install) = match &self.update_state {
+            UpdateUi::Checking => (format!("v{current} · vérification…"), TEXT_DIM, false, false),
+            UpdateUi::UpToDate => (format!("v{current} · à jour"), ACCENT_GREEN, true, false),
+            UpdateUi::Available(i) => (format!("Mettre à jour vers v{}", i.version), ACCENT_YELLOW, true, true),
+            UpdateUi::Downloading(i) => (
+                format!("v{} · téléchargement {} %", i.version, self.update_progress.load(Ordering::Relaxed)),
+                ACCENT_CYAN,
+                false,
+                false,
+            ),
+            UpdateUi::Handed(i) => (format!("v{} · terminez l'installation", i.version), ACCENT_CYAN, true, false),
+            UpdateUi::Failed => (format!("v{current} · mise à jour impossible (réessayer)"), ACCENT_RED, true, false),
+        };
+
+        h_flex()
+            .id("btn-update")
+            .gap_2()
+            .items_center()
+            .px_3()
+            .py_1()
+            .rounded(px(9999.))
+            .bg(if install { BG_CARD_HOVER } else { BG_CARD })
+            .border_1()
+            .border_color(if install { ACCENT_YELLOW } else { BORDER_DARK })
+            .when(clickable, |el| {
+                el.cursor_pointer()
+                    .hover(|s| s.bg(BG_CARD_HOVER))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if install {
+                            this.install_update(cx);
+                        } else if let Some(url) = &release_page {
+                            cx.open_url(url);
+                        } else {
+                            this.check_for_updates(cx);
+                        }
+                    }))
+            })
+            .child(div().size(px(8.)).rounded_full().bg(dot))
+            .child(
+                div()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(if install { TEXT_MAIN } else { TEXT_BODY })
+                    .child(label),
+            )
     }
 
     // Apply GPU / CPU hardware acceleration changes dynamically
@@ -744,6 +878,7 @@ impl VoiceBridgeApp {
                     h_flex()
                         .gap_3()
                         .items_center()
+                        .child(self.render_update_chip(cx))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -1945,7 +2080,17 @@ impl VoiceBridgeApp {
                                             .text_color(TEXT_MUTED)
                                             .child("Threads CPU :"),
                                     )
-                                    .children([2usize, 4, 8, 12, 16].into_iter().map(|th| {
+                                    .children({
+                                        // Always offer the value auto-detected for this machine.
+                                        let mut opts = vec![2usize, 4, 8, 12, 16];
+                                        for extra in [crate::stt::recommended_cpu_threads(), self.n_threads] {
+                                            if !opts.contains(&extra) {
+                                                opts.push(extra);
+                                            }
+                                        }
+                                        opts.sort_unstable();
+                                        opts
+                                    }.into_iter().map(|th| {
                                         let is_sel = self.n_threads == th;
                                         div()
                                             .id(SharedString::from(format!("cpu-threads-{}", th)))

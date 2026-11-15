@@ -51,6 +51,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#MyBinaryPath}"; DestDir: "{app}"; DestName: "VoiceBridge.exe"; Flags: ignoreversion
+#ifdef MyVulkanLoader
+; Vulkan loader for the GPU build: the .exe cannot start without vulkan-1.dll. GPU drivers
+; (NVIDIA / AMD / Intel) normally install it system-wide; ship it only when it is missing
+; (VMs, Windows N, no GPU driver yet), so whisper.cpp starts and falls back to the CPU.
+Source: "{#MyVulkanLoader}"; DestDir: "{app}"; DestName: "vulkan-1.dll"; Flags: ignoreversion; Check: not SystemHasVulkanLoader
+#endif
 Source: "..\..\config.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -68,4 +74,12 @@ Name: "{autodesktop}\VoiceBridge"; Filename: "{app}\VoiceBridge.exe"; Tasks: des
 
 [Run]
 Filename: "{app}\VoiceBridge.exe"; Description: "{cm:LaunchProgram,VoiceBridge}"; Flags: nowait postinstall skipifsilent
+; In-app update (silent install started by VoiceBridge itself): relaunch the new version.
+Filename: "{app}\VoiceBridge.exe"; Flags: nowait skipifnotsilent
 
+
+[Code]
+function SystemHasVulkanLoader: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{sys}\vulkan-1.dll'));
+end;

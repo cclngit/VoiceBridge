@@ -76,7 +76,7 @@ impl AppConfig {
             self.translation.api_key = None;
         }
         if self.stt.n_threads == 0 {
-            self.stt.n_threads = 4;
+            self.stt.n_threads = crate::stt::recommended_cpu_threads();
         }
 
         // 1. If engine_type is remote_asr pointing to offline local server, fallback to whisper_local
@@ -124,6 +124,34 @@ impl AppConfig {
         }
     }
 
+    /// First launch: choose the GPU and the CPU thread count for this machine so the
+    /// user never has to edit hardware settings by hand.
+    pub fn auto_detect_hardware(&mut self) {
+        self.stt.n_threads = crate::stt::recommended_cpu_threads();
+        self.stt.gpu_backend = "auto".to_string();
+        let devices = crate::stt::list_gpu_devices();
+        match crate::stt::best_gpu_device(&devices) {
+            Some(gpu) => {
+                self.stt.use_gpu = true;
+                self.stt.gpu_device = gpu.index;
+                tracing::info!(
+                    "Première configuration : GPU « {} » ({}, {} Mo), {} threads CPU.",
+                    gpu.description, gpu.backend, gpu.vram_total_mb, self.stt.n_threads
+                );
+            }
+            None => {
+                // Keep GPU allowed: whisper.cpp falls back to CPU by itself, and a GPU
+                // driver installed later is then picked up without touching settings.
+                self.stt.use_gpu = true;
+                self.stt.gpu_device = 0;
+                tracing::info!(
+                    "Première configuration : aucun GPU utilisable, Whisper sur CPU ({} threads).",
+                    self.stt.n_threads
+                );
+            }
+        }
+    }
+
     pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
         if let Ok(content) = fs::read_to_string(path.as_ref()) {
             match serde_json::from_str::<Self>(&content) {
@@ -142,6 +170,7 @@ impl AppConfig {
             }
         }
         let mut default_cfg = Self::default();
+        default_cfg.auto_detect_hardware();
         default_cfg.sanitize();
         let _ = default_cfg.save_to_file(path.as_ref());
         default_cfg

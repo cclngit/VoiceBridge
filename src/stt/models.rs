@@ -16,6 +16,9 @@ pub struct GpuDeviceInfo {
     pub vram_free_mb: u64,
     /// Total VRAM in MB.
     pub vram_total_mb: u64,
+    /// `true` for integrated GPUs (shared system memory), `false` for dedicated cards.
+    #[serde(default)]
+    pub is_integrated: bool,
 }
 
 /// Returns the list of compiled GPU backend identifiers.
@@ -119,6 +122,8 @@ pub fn list_gpu_devices() -> Vec<GpuDeviceInfo> {
                     description,
                     vram_free_mb: (free_bytes as u64) / (1024 * 1024),
                     vram_total_mb: (total_bytes as u64) / (1024 * 1024),
+                    is_integrated: dev_type
+                        == whisper_rs::whisper_rs_sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU,
                 });
 
                 gpu_idx += 1;
@@ -127,6 +132,25 @@ pub fn list_gpu_devices() -> Vec<GpuDeviceInfo> {
     }
 
     devices
+}
+
+/// Picks the GPU most likely to run Whisper fastest: a dedicated card before an
+/// integrated one, CUDA before Vulkan for the same card, then the most VRAM.
+pub fn best_gpu_device(devices: &[GpuDeviceInfo]) -> Option<&GpuDeviceInfo> {
+    devices.iter().max_by_key(|d| {
+        (
+            !d.is_integrated,
+            d.backend.eq_ignore_ascii_case("cuda"),
+            d.vram_total_mb,
+            std::cmp::Reverse(d.index),
+        )
+    })
+}
+
+/// Whisper CPU threads for this machine: about one per physical core (logical / 2), capped at 8.
+pub fn recommended_cpu_threads() -> usize {
+    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (logical / 2).clamp(1, 8)
 }
 
 fn infer_backend_from_dev_name(dev_name: &str) -> String {
@@ -178,11 +202,13 @@ pub fn resolve_gpu_selection(
                     .find(|d| d.backend.to_ascii_lowercase().contains(&backend_req))
             })
             .or_else(|| devices.iter().find(|d| d.index == gpu_device))
+            .or_else(|| best_gpu_device(&devices))
             .unwrap_or(&devices[0])
     } else {
         devices
             .iter()
             .find(|d| d.index == gpu_device)
+            .or_else(|| best_gpu_device(&devices))
             .unwrap_or(&devices[0])
     };
 

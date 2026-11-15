@@ -1,4 +1,4 @@
-name: Build & Package (.dmg / .deb / .exe — x86_64 & ARM64)
+name: Build & Release (.dmg / .deb / .exe Setup)
 
 on:
   push:
@@ -29,8 +29,61 @@ env:
   GGML_NATIVE: "OFF"
 
 jobs:
+  # Every push to main publishes a new release: bump the patch version (or minor / major
+  # with "[minor]" / "[major]" in the last commit message; "[skip release]" opts out),
+  # commit Cargo.toml + Cargo.lock, tag vX.Y.Z and push. Pushes made with GITHUB_TOKEN do
+  # not trigger workflows, so the build and release below run in this same run.
+  version:
+    name: Bump version & tag
+    if: >-
+      github.event_name == 'push'
+      && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      && !contains(github.event.head_commit.message, '[skip release]')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump
+      cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - name: Checkout branch tip
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Bump version, commit and tag
+        id: bump
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          kind=patch
+          case "$HEAD_MSG" in
+            *"[major]"*) kind=major ;;
+            *"[minor]"*) kind=minor ;;
+          esac
+          git fetch --tags --force
+          version=$(python3 scripts/bump_version.py "$kind")
+          # Never reuse an existing tag (e.g. one pushed by hand).
+          while git rev-parse -q --verify "refs/tags/v$version" >/dev/null; do
+            version=$(python3 scripts/bump_version.py patch)
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$version [skip ci]"
+          git tag -a "v$version" -m "VoiceBridge v$version"
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Released v$version" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Package (${{ matrix.label }})
+    needs: version
+    # Also runs for pull requests and tag pushes, where the version job is skipped.
+    if: ${{ !cancelled() && needs.version.result != 'failure' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -38,22 +91,13 @@ jobs:
         include:
           # ── macOS (.dmg Disk Images: ARM64 & Universal2) ────────────
           - os: macos-15
-            label: macOS ARM64 (.dmg)
-            artifact: VoiceBridge-macos-arm64
-            target: aarch64-apple-darwin
-            universal_macos: false
-            cargo_features: ""
-            bin: VoiceBridge
-            pkg_glob: dist/VoiceBridge-macos-arm64.dmg
-
-          - os: macos-15
             label: macOS Universal (.dmg — ARM64 + Intel x86_64)
             artifact: VoiceBridge-macos-universal
             target: universal-apple-darwin
             universal_macos: true
             cargo_features: ""
             bin: VoiceBridge
-            pkg_glob: dist/VoiceBridge-macos-universal.dmg
+            pkg_glob: dist/VoiceBridge-macos-universal-v*.dmg
 
           # ── Linux (.deb Debian/Ubuntu Packages via dpkg-deb) ────────
           - os: ubuntu-24.04
@@ -64,7 +108,7 @@ jobs:
             universal_macos: false
             cargo_features: "--features vulkan"
             bin: VoiceBridge
-            pkg_glob: dist/VoiceBridge-linux-amd64.deb
+            pkg_glob: dist/VoiceBridge-linux-amd64-v*.deb
 
           - os: ubuntu-24.04-arm
             label: Linux ARM64 (.deb arm64)
@@ -74,32 +118,34 @@ jobs:
             universal_macos: false
             cargo_features: ""
             bin: VoiceBridge
-            pkg_glob: dist/VoiceBridge-linux-arm64.deb
+            pkg_glob: dist/VoiceBridge-linux-arm64-v*.deb
 
           # ── Windows (.exe Inno Setup Installer & Standalone .exe) ───
           - os: windows-2022
-            label: Windows x86_64 (.exe Setup & Portable — GPU NVIDIA / Vulkan / CUDA)
+            label: Windows x86_64 (.exe Setup — GPU Vulkan NVIDIA / AMD / Intel)
             artifact: VoiceBridge-windows-x86_64
             target: x86_64-pc-windows-msvc
             inno_arch: x64compatible
             universal_macos: false
             cargo_features: "--features vulkan"
             bin: VoiceBridge.exe
-            pkg_glob: dist/VoiceBridge-windows-x86_64*.exe
+            pkg_glob: dist/VoiceBridge-windows-x86_64-setup-v*.exe
 
           - os: windows-11-arm
-            label: Windows ARM64 (.exe Setup & Portable)
+            label: Windows ARM64 (.exe Setup)
             artifact: VoiceBridge-windows-arm64
             target: aarch64-pc-windows-msvc
             inno_arch: arm64
             universal_macos: false
             cargo_features: ""
             bin: VoiceBridge.exe
-            pkg_glob: dist/VoiceBridge-windows-arm64*.exe
+            pkg_glob: dist/VoiceBridge-windows-arm64-setup-v*.exe
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (the new release tag when one was just created)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Install Linux system dependencies (x86_64 & ARM64)
         if: runner.os == 'Linux'
@@ -266,15 +312,21 @@ jobs:
             tar.exe -xzf $vkHeadersTar -C $env:RUNNER_TEMP
             Copy-Item -Path "$env:RUNNER_TEMP\Vulkan-Headers-1.4.309\include\*" -Destination "$vkSdk\Include" -Recurse -Force
 
-            $shadercHtml = curl.exe -sSL "https://storage.googleapis.com/shaderc/badges/build_link_windows_vs2022_amd64_release.html"
-            if ($shadercHtml -match '(https://storage\.googleapis\.com/shaderc/[^\s"'']+?)/install\.tgz') {
-              $shadercZipUrl = "$($Matches[1])/install.zip"
-              $shadercZip = Join-Path $env:RUNNER_TEMP "shaderc.zip"
-              $shadercDir = Join-Path $env:RUNNER_TEMP "shaderc"
-              curl.exe -sSL $shadercZipUrl -o $shadercZip
-              Expand-Archive -Path $shadercZip -DestinationPath $shadercDir -Force
-              Copy-Item "$shadercDir\install\bin\glslc.exe" "$vkSdk\Bin\glslc.exe" -Force
+            # glslc pinned to shaderc build 53 (2026-10-28) + SHA-256. The "latest" badge link moved to
+            # build 54 on 2026-11-13, whose glslc fails on some ggml-vulkan shaders; vulkan-shaders-gen
+            # only logs that, so the link then fails with unresolved set_rows_*_rte symbols.
+            $shadercZipUrl = "https://storage.googleapis.com/shaderc/artifacts/prod/graphics_shader_compiler/shaderc/windows-vs2022-amd64-release/continuous/53/20261028-151553/install.zip"
+            $shadercZip = Join-Path $env:RUNNER_TEMP "shaderc.zip"
+            $shadercDir = Join-Path $env:RUNNER_TEMP "shaderc"
+            curl.exe -fsSL $shadercZipUrl -o $shadercZip
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download shaderc (glslc)" }
+            $shadercHash = (Get-FileHash -Algorithm SHA256 $shadercZip).Hash.ToLower()
+            if ($shadercHash -ne "2d5358873b2726a15ed9ab6fe45143a76913f4d62a8434a6f6a1a471bdfe1270") {
+              throw "shaderc checksum mismatch: $shadercHash"
             }
+            Expand-Archive -Path $shadercZip -DestinationPath $shadercDir -Force
+            Copy-Item "$shadercDir\install\bin\glslc.exe" "$vkSdk\Bin\glslc.exe" -Force
+            & "$vkSdk\Bin\glslc.exe" --version
 
             # Generate vulkan-1.lib import library for x64
             $msvcBin = $null
@@ -437,7 +489,9 @@ jobs:
       - name: Cache Cargo registry and target build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.cargo_features }}
+          # Includes the pinned shaderc build: ggml-vulkan shaders are compiled inside the cached
+          # whisper-rs-sys output, so a glslc change must not reuse it.
+          key: ${{ matrix.target }}-${{ matrix.cargo_features }}-shaderc53
           cache-on-failure: true
 
       - name: Build release binary on Unix (single target)
@@ -518,49 +572,35 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9] ]]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"
-          else
-            PKG_VERSION="0.1.0"
-          fi
+          PKG_VERSION="$(python3 scripts/bump_version.py --current)"
           chmod +x packaging/macos/build_dmg.sh
           ./packaging/macos/build_dmg.sh \
             "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
-            "dist/${{ matrix.artifact }}.dmg" \
+            "dist/${{ matrix.artifact }}-v$PKG_VERSION.dmg" \
             "$PKG_VERSION"
 
       - name: Build Linux .deb Package (dpkg-deb)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9] ]]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"
-          else
-            PKG_VERSION="0.1.0"
-          fi
+          PKG_VERSION="$(python3 scripts/bump_version.py --current)"
           chmod +x packaging/linux/build_deb.sh
           ./packaging/linux/build_deb.sh \
             "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
             "${{ matrix.deb_arch }}" \
-            "dist/${{ matrix.artifact }}.deb" \
+            "dist/${{ matrix.artifact }}-v$PKG_VERSION.deb" \
             "$PKG_VERSION"
 
-      - name: Build Windows .exe Setup Installer (Inno Setup 6) & Standalone .exe
+      - name: Build Windows .exe Setup Installer (Inno Setup 6)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -match '^v[0-9]') {
-            $pkgVersion = $env:GITHUB_REF_NAME.Substring(1)
-          } else {
-            $pkgVersion = "0.1.0"
-          }
+          $pkgVersion = (python scripts/bump_version.py --current).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $pkgVersion) { throw "Cannot read the version from Cargo.toml" }
 
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
-          # 1. Copy standalone single-file portable .exe
-          Copy-Item "target\${{ matrix.target }}\release\VoiceBridge.exe" "dist\${{ matrix.artifact }}.exe" -Force
-
-          # 2. Locate or install Inno Setup 6 (ISCC.exe) to compile Setup .exe
+          # Locate or install Inno Setup 6 (ISCC.exe) to compile Setup .exe
           $isccCandidates = @(
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
@@ -588,11 +628,22 @@ jobs:
           }
 
           $binRel = "..\..\target\${{ matrix.target }}\release\VoiceBridge.exe"
-          & $iscc `
+
+          # Bundle the Vulkan loader (installed above from the pinned VulkanRT) when the binary links it.
+          $isccExtra = @()
+          $vkLoader = "$env:SystemRoot\System32\vulkan-1.dll"
+          $importsVulkan = (& dumpbin /dependents "target\${{ matrix.target }}\release\VoiceBridge.exe" | Select-String -SimpleMatch "vulkan-1.dll")
+          if ($importsVulkan) {
+            if (-not (Test-Path $vkLoader)) { throw "VoiceBridge.exe imports vulkan-1.dll but no loader is installed on the runner" }
+            $isccExtra += "/DMyVulkanLoader=$vkLoader"
+            Write-Host "Bundling Vulkan loader from $vkLoader"
+          }
+
+          & $iscc @isccExtra `
             "/DMyAppVersion=$pkgVersion" `
             "/DMyArch=${{ matrix.inno_arch }}" `
             "/DMyBinaryPath=$binRel" `
-            "/DMyOutputBaseFilename=${{ matrix.artifact }}-setup" `
+            "/DMyOutputBaseFilename=${{ matrix.artifact }}-setup-v$pkgVersion" `
             "packaging\windows\installer.iss"
           if ($LASTEXITCODE -ne 0) {
             throw "ISCC.exe failed with exit code $LASTEXITCODE"
@@ -607,14 +658,18 @@ jobs:
 
   release:
     name: Create GitHub Release (All Installers + Checksums + Source)
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, build]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success'
+      && (needs.version.outputs.tag != '' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Download all packaged installers (.dmg, .deb, .exe)
         uses: actions/download-artifact@v4
@@ -631,7 +686,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: VoiceBridge ${{ github.ref_name }}
+          tag_name: ${{ needs.version.outputs.tag || github.ref_name }}
+          name: VoiceBridge ${{ needs.version.outputs.tag || github.ref_name }}
           body_path: packaging/RELEASE_NOTES.md
           files: |
             release-assets/VoiceBridge-*

@@ -5,7 +5,7 @@
 # VoiceBridge — Speech To Text To Translate (Rust)
 
 <p align="center">
-  <a href="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml"><img src="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build &amp; Package (.dmg / .deb / .exe — x86_64 &amp; ARM64)"></a>
+  <a href="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml"><img src="https://github.com/cclngit/VoiceBridge/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build &amp; Release (.dmg / .deb / .exe Setup)"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://github.com/longbridge/gpui-kit"><img src="https://img.shields.io/badge/GUI-GPUI_Accelerated-6366f1.svg" alt="GUI"></a>
   <a href="https://developer.apple.com/metal/"><img src="https://img.shields.io/badge/macOS-Metal_GPU-success.svg?logo=apple" alt="macOS"></a>
@@ -234,13 +234,13 @@ cargo run --release -- --headless
 .\target\release\VoiceBridge.exe
 ```
 
-> **CI/CD & Native Multi-Arch Installers (`.dmg`, `.deb`, `.exe`)**: The GitHub Actions workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) automatically builds, tests, and packages native installers for every target architecture on every push and `v*` tag:
-> - **macOS ARM64 (`.dmg`)**: `VoiceBridge-macos-arm64.dmg` (ad-hoc signed `VoiceBridge.app` + `.icns` icon + `Applications` symlink)
-> - **macOS Universal2 (`.dmg`)**: `VoiceBridge-macos-universal.dmg` (universal `arm64` + `x86_64` binary via `lipo`)
-> - **Linux x86_64 (`.deb`)**: `VoiceBridge-linux-amd64.deb` (Debian/Ubuntu package built via `dpkg-deb` with `.desktop` launcher)
-> - **Linux ARM64 (`.deb`)**: `VoiceBridge-linux-arm64.deb` (Debian/Ubuntu `arm64` package built via `dpkg-deb`)
-> - **Windows x86_64 (`.exe`)**: `VoiceBridge-windows-x86_64-setup.exe` (Inno Setup graphical installer) + `VoiceBridge-windows-x86_64.exe` (standalone portable executable)
-> - **Windows ARM64 (`.exe`)**: `VoiceBridge-windows-arm64-setup.exe` (native Windows on ARM / Copilot+ / Snapdragon X installer) + `VoiceBridge-windows-arm64.exe` (standalone portable executable)
+> **Releases & installers (`.dmg`, `.deb`, `.exe` Setup)**: every push to `main` publishes a new release through [`.github/workflows/ci.yml`](.github/workflows/ci.yml). The `version` job runs [`scripts/bump_version.py`](scripts/bump_version.py) to bump the patch version in `Cargo.toml` / `Cargo.lock` (`[minor]` or `[major]` in the last commit message bumps those instead, `[skip release]` skips the release), commits it, tags `vX.Y.Z`, then builds and publishes the installers below with a `SHA256SUMS.txt`. Every file name ends with its version:
+> - **macOS Universal (`.dmg`)**: `VoiceBridge-macos-universal-vX.Y.Z.dmg` — one app for Apple Silicon and Intel (ad-hoc signed `VoiceBridge.app`, drag to `Applications`)
+> - **Linux x86_64 / ARM64 (`.deb`)**: `VoiceBridge-linux-amd64-vX.Y.Z.deb`, `VoiceBridge-linux-arm64-vX.Y.Z.deb`
+> - **Windows x86_64 (`.exe`)**: `VoiceBridge-windows-x86_64-setup-vX.Y.Z.exe` — Vulkan GPU build (NVIDIA / AMD / Intel, no CUDA install needed); ships the Vulkan loader when the PC has none, falls back to the CPU otherwise
+> - **Windows ARM64 (`.exe`)**: `VoiceBridge-windows-arm64-setup-vX.Y.Z.exe`
+>
+> **In-app updates**: at startup VoiceBridge asks GitHub Releases for the latest version (public metadata only: no audio, text or settings are sent). When one is available, the title-bar button downloads the installer, checks its SHA-256 against `SHA256SUMS.txt` and installs it — silently on Windows, then VoiceBridge relaunches; on macOS / Linux the `.dmg` / `.deb` opens in the system installer.
 
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# VoiceBridge — macOS .app Bundle & .dmg Disk Image Builder (ARM64 & Universal2)
+# VoiceBridge — macOS .app Bundle & .dmg Disk Image Builder (Universal2)
 # Usage: ./packaging/macos/build_dmg.sh <binary_path> <output_dmg_path> [version]
 # ==============================================================================
 
