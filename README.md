@@ -124,7 +124,7 @@ VoiceBridge supports two model categories with seamless switching:
 ### 3. Kyutai streaming engines (Candle, in-process)
 
 - **Kyutai STT 1B (FR/EN)** — `kyutai/stt-1b-en_fr-candle`: words appear ~0.5 s after being spoken; sentences are closed by the model's semantic VAD. Real-time factor ≈ 0.45 on an Apple M4 (Metal).
-- **Kyutai Hibiki 1B / 2B** — French speech → English text, simultaneous translation. Real-time factor ≈ 0.8 for the 1B model on an Apple M4. A Metal or CUDA GPU is recommended: on CPU (e.g. Vulkan-only Windows builds) real time is not guaranteed.
+- **Kyutai Hibiki 1B / 2B** — French speech → English text, simultaneous translation. Real-time factor ≈ 0.8 for the 1B model on an Apple M4. A Metal or CUDA GPU is recommended: on CPU (e.g. AMD / Intel GPUs on Windows) real time is not guaranteed.
 
 ### 4. Local translation
 
@@ -237,7 +237,7 @@ cargo run --release -- --headless
 > **Releases & installers (`.dmg`, `.deb`, `.exe` Setup)**: every push to `main` publishes a new release through [`.github/workflows/ci.yml`](.github/workflows/ci.yml). The `version` job runs [`scripts/bump_version.py`](scripts/bump_version.py) to bump the patch version in `Cargo.toml` / `Cargo.lock` (`[minor]` or `[major]` in the last commit message bumps those instead, `[skip release]` skips the release), commits it, tags `vX.Y.Z`, then builds and publishes the installers below with a `SHA256SUMS.txt`. Every file name ends with its version:
 > - **macOS Universal (`.dmg`)**: `VoiceBridge-macos-universal-vX.Y.Z.dmg` — one app for Apple Silicon and Intel (ad-hoc signed `VoiceBridge.app`, drag to `Applications`)
 > - **Linux x86_64 / ARM64 (`.deb`)**: `VoiceBridge-linux-amd64-vX.Y.Z.deb`, `VoiceBridge-linux-arm64-vX.Y.Z.deb`
-> - **Windows x86_64 (`.exe`)**: `VoiceBridge-windows-x86_64-setup-vX.Y.Z.exe` — Vulkan GPU build (NVIDIA / AMD / Intel, no CUDA install needed); ships the Vulkan loader when the PC has none, falls back to the CPU otherwise
+> - **Windows x86_64 (`.exe`)**: `VoiceBridge-windows-x86_64-setup-vX.Y.Z.exe` — single installer for every PC: CUDA on NVIDIA (Kyutai, Hibiki, MADLAD and Whisper; CUDA runtime bundled, only the NVIDIA driver is needed), Vulkan on AMD / Intel (Whisper), CPU otherwise; ships the Vulkan loader when the PC has none
 > - **Windows ARM64 (`.exe`)**: `VoiceBridge-windows-arm64-setup-vX.Y.Z.exe`
 >
 > **In-app updates**: at startup VoiceBridge asks GitHub Releases for the latest version (public metadata only: no audio, text or settings are sent). When one is available, the title-bar button downloads the installer, checks its SHA-256 against `SHA256SUMS.txt` and installs it — silently on Windows, then VoiceBridge relaunches; on macOS / Linux the `.dmg` / `.deb` opens in the system installer.

@@ -46,10 +46,12 @@ fn create_device(use_gpu: bool, gpu_device: i32) -> Device {
     if use_gpu {
         #[cfg(feature = "cuda")]
         {
-            if candle_core::utils::cuda_is_available() {
-                match Device::new_cuda(ordinal) {
+            if nvidia_driver_present() && candle_core::utils::cuda_is_available() {
+                match Device::new_cuda(ordinal).and_then(|d| smoke_test(&d).map(|_| d)) {
                     Ok(d) => return d,
-                    Err(e) => tracing::warn!("CUDA device #{ordinal} unavailable for Candle: {e}"),
+                    // e.g. a GPU older than the compute capability the kernels were built
+                    // for (8.0 in release builds): the PTX cannot be loaded there.
+                    Err(e) => tracing::warn!("CUDA device #{ordinal} unusable for Candle, using the CPU: {e}"),
                 }
             }
         }
@@ -65,6 +67,53 @@ fn create_device(use_gpu: bool, gpu_device: i32) -> Device {
     }
     let _ = ordinal;
     Device::Cpu
+}
+
+/// Runs the kernels a model needs first (fill, matmul, cast) so an unusable GPU is detected
+/// here, with a CPU fallback, instead of failing in the middle of model loading.
+pub fn smoke_test(device: &Device) -> candle_core::Result<()> {
+    let a = candle_core::Tensor::ones((8, 8), device.bf16_default_to_f32(), device)?;
+    let sum = a.matmul(&a)?.to_dtype(candle_core::DType::F32)?.sum_all()?.to_scalar::<f32>()?;
+    if sum != 512.0 {
+        candle_core::bail!("wrong result {sum} for a test matmul");
+    }
+    Ok(())
+}
+
+/// Whether the NVIDIA driver API (`nvcuda.dll`) can be loaded.
+///
+/// On Windows the CUDA build delay-loads `nvcuda.dll` (see build.rs) so the .exe also starts
+/// on PCs without an NVIDIA driver. Calling any CUDA driver function there would then abort
+/// the process instead of returning an error, so it must be probed before Candle touches CUDA.
+/// Elsewhere the library is linked normally and is necessarily present once the app runs.
+#[cfg(feature = "cuda")]
+pub fn nvidia_driver_present() -> bool {
+    #[cfg(windows)]
+    {
+        use std::sync::OnceLock;
+        static PRESENT: OnceLock<bool> = OnceLock::new();
+        *PRESENT.get_or_init(|| {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn LoadLibraryExW(name: *const u16, file: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+            }
+            // LOAD_LIBRARY_SEARCH_SYSTEM32: the driver always installs it in System32; never
+            // pick up a stray copy from the app or current directory.
+            const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+            let name: Vec<u16> = "nvcuda.dll".encode_utf16().chain(std::iter::once(0)).collect();
+            // The handle is kept on purpose: the delay-load helper reuses the loaded module.
+            let handle = unsafe { LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+            let present = !handle.is_null();
+            if !present {
+                tracing::info!("No NVIDIA driver (nvcuda.dll) found: Candle models use the CPU");
+            }
+            present
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 /// Human readable label of a Candle device.

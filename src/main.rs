@@ -76,6 +76,34 @@ struct Args {
     /// Useful to test engines or subtitle a recording.
     #[arg(long, value_name = "FILE")]
     input_wav: Option<PathBuf>,
+
+    /// Print the GPU devices seen by whisper.cpp and Candle (Kyutai / MADLAD), run a small
+    /// computation on the Candle device, then exit. Diagnostic for GPU / driver issues.
+    #[arg(long, default_value_t = false)]
+    probe_gpu: bool,
+}
+
+/// `--probe-gpu`: report the GPU backends usable by this binary on this machine.
+fn probe_gpu() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("Backends compilés : {:?}", stt::compiled_gpu_backends());
+    let devices = stt::models::list_gpu_devices();
+    if devices.is_empty() {
+        println!("whisper.cpp : aucun GPU (CPU)");
+    }
+    for d in &devices {
+        println!(
+            "whisper.cpp : #{} {} {} — {} ({} / {} Mo)",
+            d.index, d.backend, d.dev_name, d.description, d.vram_free_mb, d.vram_total_mb
+        );
+    }
+    let device = ml::resolve_device(ml::DeviceSlot::Streaming, true, 0);
+    ml::smoke_test(&device)?;
+    println!(
+        "Candle (Kyutai / MADLAD) : {} {:?} — OK",
+        ml::device_label(&device),
+        device.bf16_default_to_f32()
+    );
+    Ok(())
 }
 
 /// Feed a WAV file into the pipeline at real-time speed, followed by silence.
@@ -232,6 +260,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or_else(|_| "info,VoiceBridge=debug".into()),
         )
         .init();
+
+    if args.probe_gpu {
+        return probe_gpu();
+    }
 
     let config_path = if args.config != std::path::Path::new("config.json") && args.config.is_relative() {
         launch_cwd
