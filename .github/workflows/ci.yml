@@ -9,14 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       windows_gpu_backend:
-        description: "Backend GPU pour Windows x86_64 (vulkan = universel NVIDIA/AMD/Intel sans DLL externe, cuda = NVIDIA CUDA, cuda,vulkan = les deux, cpu = processeur uniquement)"
+        description: "Backend GPU pour Windows x86_64 (cuda,vulkan = installeur unique : CUDA pour NVIDIA + Vulkan pour AMD/Intel, vulkan = Vulkan seul, cuda = CUDA seul, cpu = processeur uniquement)"
         required: false
-        default: "vulkan"
+        default: "cuda,vulkan"
         type: choice
         options:
+          - cuda,vulkan
           - vulkan
           - cuda
-          - cuda,vulkan
           - cpu
 
 permissions:
@@ -122,12 +122,14 @@ jobs:
 
           # ── Windows (.exe Inno Setup Installer & Standalone .exe) ───
           - os: windows-2022
-            label: Windows x86_64 (.exe Setup — GPU Vulkan NVIDIA / AMD / Intel)
+            label: Windows x86_64 (.exe Setup — GPU CUDA NVIDIA + Vulkan AMD / Intel)
             artifact: VoiceBridge-windows-x86_64
             target: x86_64-pc-windows-msvc
             inno_arch: x64compatible
             universal_macos: false
-            cargo_features: "--features vulkan"
+            # One installer for every PC: CUDA (Kyutai / MADLAD via Candle + Whisper) on NVIDIA,
+            # Vulkan (Whisper) on AMD / Intel, CPU otherwise. The CUDA runtime DLLs are bundled.
+            cargo_features: "--features cuda,vulkan"
             bin: VoiceBridge.exe
             pkg_glob: dist/VoiceBridge-windows-x86_64-setup-v*.exe
 
@@ -187,12 +189,31 @@ jobs:
         if: matrix.target == 'x86_64-pc-windows-msvc'
         uses: ilammy/setup-nasm@v1
 
+      # Pushes have no inputs: they build the default (cuda,vulkan) backend.
       - name: Setup NVIDIA CUDA Toolkit on Windows x86_64 (when CUDA backend is selected)
-        if: matrix.target == 'x86_64-pc-windows-msvc' && contains(inputs.windows_gpu_backend, 'cuda')
-        uses: Jimver/cuda-toolkit@v0.2.23
+        if: matrix.target == 'x86_64-pc-windows-msvc' && (inputs.windows_gpu_backend == '' || contains(inputs.windows_gpu_backend, 'cuda'))
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.6.3"
-          sub-packages: '["nvcc", "cublas_dev", "cudart"]'
+          # 12.8+ is needed for Blackwell (RTX 50xx) device code in whisper.cpp (120a-real).
+          cuda: "12.9.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "nvrtc", "nvrtc_dev", "thrust"]'
+
+      - name: Configure CUDA build for Windows x86_64 (no GPU on the runner)
+        if: matrix.target == 'x86_64-pc-windows-msvc' && (inputs.windows_gpu_backend == '' || contains(inputs.windows_gpu_backend, 'cuda'))
+        shell: pwsh
+        run: |
+          # Candle's kernels are compiled to PTX for one compute capability, which the NVIDIA
+          # driver JIT-compiles for newer GPUs. 8.0 is the lowest candle-kernels 0.9 builds for
+          # (bf16 WMMA); it covers RTX 30 / 40 / 50. Older GPUs (RTX 20, GTX 16) fall back to the
+          # CPU for Kyutai / MADLAD (ml::create_device) and still get CUDA for Whisper.
+          # Without it bindgen_cuda queries nvidia-smi, absent on the runner.
+          echo "CUDA_COMPUTE_CAP=80" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # nvcc builds candle-kernels' MoE library with the static CRT (/MT) by default, while
+          # Rust and whisper.cpp use /MD: the link then fails with LNK2038 (RuntimeLibrary).
+          # Prepended so explicit flags (e.g. CMake's) still win. Same as scripts/build_windows_gpu.ps1.
+          echo "NVCC_PREPEND_FLAGS=-Xcompiler=/MD" | Out-File -FilePath $env:GITHUB_ENV -Append
+          nvcc --version
 
       - name: Setup MSVC Developer Environment on Windows
         if: runner.os == 'Windows'
@@ -491,7 +512,7 @@ jobs:
         with:
           # Includes the pinned shaderc build: ggml-vulkan shaders are compiled inside the cached
           # whisper-rs-sys output, so a glslc change must not reuse it.
-          key: ${{ matrix.target }}-${{ matrix.cargo_features }}-shaderc53
+          key: ${{ matrix.target }}-${{ matrix.cargo_features }}-shaderc53-cuda12.9.1
           cache-on-failure: true
 
       - name: Build release binary on Unix (single target)
@@ -639,6 +660,30 @@ jobs:
             Write-Host "Bundling Vulkan loader from $vkLoader"
           }
 
+          # Runtime DLLs shipped next to the .exe so users install nothing else.
+          $exe = "target\${{ matrix.target }}\release\VoiceBridge.exe"
+          $runtimeDlls = Join-Path $env:RUNNER_TEMP "runtime-dlls"
+          New-Item -ItemType Directory -Force -Path $runtimeDlls | Out-Null
+          $imports = & dumpbin /nologo /dependents $exe
+
+          # 1. Visual C++ runtime (whisper.cpp is C++): absent on fresh Windows installs.
+          $crtArch = if ("${{ matrix.target }}" -like "aarch64-*") { "arm64" } else { "x64" }
+          $crtDir = Get-ChildItem (Join-Path $env:VCToolsRedistDir $crtArch) -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if (-not $crtDir) { throw "Visual C++ runtime not found under $env:VCToolsRedistDir$crtArch" }
+          foreach ($line in $imports) {
+            $name = $line.Trim()
+            if ($name -match '^(msvcp|vcruntime|concrt)[0-9a-z_]*\.dll$') {
+              Copy-Item (Join-Path $crtDir.FullName $name) $runtimeDlls -Force
+              Write-Host "Bundling $name from $($crtDir.FullName)"
+            }
+          }
+
+          # 2. CUDA runtime (cudart, cuBLAS, cuRAND…) when the binary uses CUDA.
+          if ($imports | Select-String -Pattern "cudart64_") {
+            & packaging\windows\collect_cuda_dlls.ps1 -Exe $exe -OutDir $runtimeDlls
+          }
+          if (Get-ChildItem $runtimeDlls -Filter *.dll) { $isccExtra += "/DMyRuntimeDllDir=$runtimeDlls" }
+
           & $iscc @isccExtra `
             "/DMyAppVersion=$pkgVersion" `
             "/DMyArch=${{ matrix.inno_arch }}" `
@@ -648,6 +693,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "ISCC.exe failed with exit code $LASTEXITCODE"
           }
+
+      # The runner has no GPU driver, like an AMD / Intel PC without NVIDIA: the installed app must
+      # start and fall back cleanly, with only what the installer ships (no CUDA Toolkit on PATH).
+      - name: Smoke test the installed app on Windows (no NVIDIA driver, no CUDA Toolkit)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "${{ matrix.pkg_glob }}" | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "vb-installed"
+          $proc = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
+          Get-ChildItem $dir -Filter *.dll | ForEach-Object { Write-Host "Installed $($_.Name)" }
+          # A silent install relaunches the app (in-app updater path): stop that GUI instance.
+          Start-Sleep -Seconds 3
+          Get-Process VoiceBridge -ErrorAction SilentlyContinue | Stop-Process -Force
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Remove-Item Env:CUDA_PATH -ErrorAction SilentlyContinue
+          & "$dir\VoiceBridge.exe" --probe-gpu
+          if ($LASTEXITCODE -ne 0) { throw "VoiceBridge.exe --probe-gpu failed with exit code $LASTEXITCODE" }
 
       - name: Upload CI package artifact
         uses: actions/upload-artifact@v4

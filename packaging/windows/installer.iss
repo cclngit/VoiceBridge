@@ -57,6 +57,14 @@ Source: "{#MyBinaryPath}"; DestDir: "{app}"; DestName: "VoiceBridge.exe"; Flags:
 ; (VMs, Windows N, no GPU driver yet), so whisper.cpp starts and falls back to the CPU.
 Source: "{#MyVulkanLoader}"; DestDir: "{app}"; DestName: "vulkan-1.dll"; Flags: ignoreversion; Check: not SystemHasVulkanLoader
 #endif
+#ifdef MyRuntimeDllDir
+; Runtime DLLs the .exe imports, deployed next to it so nothing else has to be installed:
+; - Visual C++ runtime (msvcp140, vcruntime140…; Microsoft app-local deployment);
+; - x64: CUDA runtime for NVIDIA GPUs (cudart, cuBLAS, cuRAND — NVIDIA redistributables),
+;   so Kyutai / MADLAD / Whisper run on CUDA with only the NVIDIA driver. Unused, and
+;   harmless, on AMD / Intel PCs: those use Vulkan or the CPU.
+Source: "{#MyRuntimeDllDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 Source: "..\..\config.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

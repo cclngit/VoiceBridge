@@ -1650,12 +1650,14 @@ impl VoiceBridgeApp {
                     )
                     .child(
                         h_flex()
+                            .items_stretch()
                             .gap_4()
                             .child(
                                 // Whisper Local GPU/CPU Card
                                 v_flex()
                                     .id("card-whisper-local")
                                     .flex_1()
+                                    .min_w_0()
                                     .p_4()
                                     .rounded(px(12.))
                                     .border_1()
@@ -1681,17 +1683,18 @@ impl VoiceBridgeApp {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .items_center()
+                                            .items_start()
+                                            .gap_2()
                                             .child(
-                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child(
+                                                div().flex_1().min_w_0().text_sm().font_semibold().text_color(TEXT_MAIN).child(
                                                     format!("Whisper Local ({})", active_hw_summary),
                                                 ),
                                             )
                                             .child(
                                                 if self.active_engine == ENGINE_WHISPER {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x166534)).text_xs().text_color(rgba_hex(0xbbf7d0)).child("Actif")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x166534)).text_xs().text_color(rgba_hex(0xbbf7d0)).child("Actif")
                                                 } else {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
                                                 },
                                             ),
                                     )
@@ -1704,6 +1707,7 @@ impl VoiceBridgeApp {
                                 v_flex()
                                     .id("card-remote-asr")
                                     .flex_1()
+                                    .min_w_0()
                                     .p_4()
                                     .rounded(px(12.))
                                     .border_1()
@@ -1731,15 +1735,16 @@ impl VoiceBridgeApp {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .items_center()
+                                            .items_start()
+                                            .gap_2()
                                             .child(
-                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child("Serveur Local / OpenAI API (Speaches)"),
+                                                div().flex_1().min_w_0().text_sm().font_semibold().text_color(TEXT_MAIN).child("Serveur Local / OpenAI API (Speaches)"),
                                             )
                                             .child(
                                                 if self.active_engine == ENGINE_REMOTE {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x1e40af)).text_xs().text_color(rgba_hex(0xbfdbfe)).child("Actif")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x1e40af)).text_xs().text_color(rgba_hex(0xbfdbfe)).child("Actif")
                                                 } else {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
                                                 },
                                             ),
                                     )
@@ -1752,6 +1757,7 @@ impl VoiceBridgeApp {
                                 v_flex()
                                     .id("card-kyutai-streaming")
                                     .flex_1()
+                                    .min_w_0()
                                     .p_4()
                                     .rounded(px(12.))
                                     .border_1()
@@ -1775,18 +1781,19 @@ impl VoiceBridgeApp {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .items_center()
+                                            .items_start()
+                                            .gap_2()
                                             .child(
-                                                div().text_sm().font_semibold().text_color(TEXT_MAIN).child(format!(
+                                                div().flex_1().min_w_0().text_sm().font_semibold().text_color(TEXT_MAIN).child(format!(
                                                     "Streaming Kyutai ({})",
                                                     crate::stt::models::candle_backend_label()
                                                 )),
                                             )
                                             .child(
                                                 if self.active_engine == ENGINE_KYUTAI || self.active_engine == ENGINE_HIBIKI {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x701a75)).text_xs().text_color(rgba_hex(0xf5d0fe)).child("Actif")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x701a75)).text_xs().text_color(rgba_hex(0xf5d0fe)).child("Actif")
                                                 } else {
-                                                    div().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
+                                                    div().flex_none().px_2().py_0p5().rounded(px(9999.)).bg(rgba_hex(0x26262c)).text_xs().text_color(TEXT_MUTED).child("Cliquer pour activer")
                                                 },
                                             ),
                                     )
@@ -1867,14 +1874,16 @@ impl VoiceBridgeApp {
                             ),
                     )
                     .child(
-                        // Row 1: Backend Mode Selector
+                        // Row 1: Backend Mode Selector (equal-height options)
                         h_flex()
+                            .items_stretch()
                             .gap_3()
                             .children(backend_options.iter().map(|(val, title, hint)| {
                                 let is_sel = cur_backend == *val;
                                 let val_str = (*val).to_string();
                                 div()
                                     .flex_1()
+                                    .min_w_0()
                                     .id(SharedString::from(format!("gpu-backend-{}", val)))
                                     .cursor_pointer()
                                     .p_3()
@@ -2283,6 +2292,7 @@ impl VoiceBridgeApp {
                                 h_flex()
                                     .items_center()
                                     .justify_between()
+                                    .gap_4()
                                     .p_3()
                                     .rounded(px(8.))
                                     .bg(rgba_hex(0x1a1a1e))
@@ -2290,17 +2300,23 @@ impl VoiceBridgeApp {
                                     .border_color(BORDER_SUBTLE)
                                     .child(
                                         h_flex()
+                                            .flex_1()
+                                            .min_w_0()
                                             .gap_3()
                                             .items_center()
                                             .child(
-                                                div().size(px(8.)).rounded_full().bg(if is_active { ACCENT_GREEN } else if installed { ACCENT_CYAN } else { rgba_hex(0x6b7280) }),
+                                                div().flex_none().size(px(8.)).rounded_full().bg(if is_active { ACCENT_GREEN } else if installed { ACCENT_CYAN } else { rgba_hex(0x6b7280) }),
                                             )
                                             .child(
                                                 v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
                                                     .gap_0p5()
                                                     .child(
                                                         h_flex()
-                                                            .gap_2()
+                                                            .flex_wrap()
+                                                            .gap_x_2()
+                                                            .gap_y_1()
                                                             .items_center()
                                                             .child(div().text_sm().font_medium().text_color(TEXT_MAIN).child(meta.name.clone()))
                                                             .child(
@@ -2319,9 +2335,10 @@ impl VoiceBridgeApp {
                                     )
                                     .child(
                                         h_flex()
+                                            .flex_none()
                                             .gap_3()
                                             .items_center()
-                                            .child(div().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(TEXT_DIM).child(size_str))
+                                            .child(div().w(px(84.)).text_right().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(TEXT_DIM).child(size_str))
                                             .child(
                                                 if is_active {
                                                     div().px_3().py_1().rounded(px(6.)).bg(rgba_hex(0x166534)).text_xs().font_semibold().text_color(rgba_hex(0xbbf7d0)).child("Actif").into_any_element()

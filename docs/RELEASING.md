@@ -11,6 +11,12 @@ incrémente la version avec [`scripts/bump_version.py`](../scripts/bump_version.
 | `[major]`                         | majeure : 0.3.1 → 1.0.0   |
 | `[skip release]`                  | aucune release            |
 
+## Notes de release
+
+Le texte de chaque release vient de [`packaging/RELEASE_NOTES.md`](../packaging/RELEASE_NOTES.md),
+suivi de la liste des changements générée par GitHub. Il est réutilisé à chaque version : il doit
+rester **court, en anglais** et ne pas décrire une version précise.
+
 ## À savoir
 
 - **Chaque push sur `main` publie une vraie release**, y compris le premier push des changements
