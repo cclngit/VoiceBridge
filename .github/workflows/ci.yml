@@ -710,8 +710,12 @@ jobs:
           Get-Process VoiceBridge -ErrorAction SilentlyContinue | Stop-Process -Force
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           Remove-Item Env:CUDA_PATH -ErrorAction SilentlyContinue
-          & "$dir\VoiceBridge.exe" --probe-gpu
-          if ($LASTEXITCODE -ne 0) { throw "VoiceBridge.exe --probe-gpu failed with exit code $LASTEXITCODE" }
+          # GUI-subsystem .exe: `&` neither waits for it nor sets $LASTEXITCODE, so use Start-Process.
+          $out = Join-Path $env:RUNNER_TEMP "probe.out"; $err = Join-Path $env:RUNNER_TEMP "probe.err"
+          $probe = Start-Process -FilePath "$dir\VoiceBridge.exe" -ArgumentList "--probe-gpu" -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out, $err -ErrorAction SilentlyContinue
+          if ($probe.ExitCode -ne 0) { throw "VoiceBridge.exe --probe-gpu failed with exit code $($probe.ExitCode)" }
+          if (-not (Select-String -Path $out -Pattern "Candle .* OK" -Quiet)) { throw "--probe-gpu did not report a working Candle device" }
 
       - name: Upload CI package artifact
         uses: actions/upload-artifact@v4
